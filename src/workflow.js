@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { extractListingData } from './extractor.js';
 import { evaluateListing } from './jev.js';
-import { fetchListingDetail, fetchNeighborhoodPage } from './scraper.js';
+import { extractNeighborhoodLinks, fetchListingDetail, fetchNeighborhoodPage } from './scraper.js';
 import { getSettings, isAiQuotaExhausted, logError, logSuccess } from './utils.js';
 
 const DEFAULT_BASE_URL = 'https://divar.ir/s/tehran/rent-residential';
@@ -108,6 +108,30 @@ async function evaluatePending(env, step) {
 export class DivarScrapeWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const payload = event.payload || {};
+    const reachability = await step.do('test-divar', async () => {
+      const url = 'https://divar.ir/s/tehran/rent-residential';
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
+            Accept: 'text/html,application/xhtml+xml',
+            Referer: 'https://divar.ir/'
+          }
+        });
+        const html = await response.text();
+        return {
+          status: response.status,
+          htmlLength: html.length,
+          hasCaptcha: html.includes('captcha') || html.includes('کپچا'),
+          sampleLinks: extractNeighborhoodLinks(html).slice(0, 10)
+        };
+      } catch (error) {
+        await logError(this.env, 'scraper', url, error);
+        return { status: 0, htmlLength: 0, hasCaptcha: false, sampleLinks: [], error: String(error?.message || error) };
+      }
+    });
+    await step.do('log-divar-reachability', async () => logSuccess(this.env, 'system', 'workflow', JSON.stringify(reachability)));
     const selection = await step.do('select-neighborhoods', async () => {
       if (payload.retryListingId) {
         await this.env.DB.prepare('UPDATE listings SET extraction_done = 0, jev_done = 0 WHERE id = ? AND extraction_done = -1')

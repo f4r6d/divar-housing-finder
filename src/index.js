@@ -1,10 +1,11 @@
 import { DivarScrapeWorkflow } from './workflow.js';
-import { getSettings, json, logError } from './utils.js';
+import { discoverRealSlugs } from './scraper.js';
+import { escHtml, getSettings, json, logError } from './utils.js';
 
 export { DivarScrapeWorkflow };
 
 const LABELS = new Set(['real', 'suspicious', 'fake', 'unknown']);
-const SERVICES = new Set(['scraper', 'workers-ai', 'jev', 'system', 'willhaben']);
+const SERVICES = new Set(['scraper', 'scraper-discovery', 'workers-ai', 'jev', 'system', 'willhaben']);
 
 function html(body, status = 200) {
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
@@ -90,6 +91,10 @@ async function apiRoute(request, env, url) {
     return json(result.results || []);
   }
 
+  if (path === '/api/discover-slugs' && request.method === 'GET') {
+    return json(await discoverRealSlugs(env));
+  }
+
   if (path === '/api/settings' && request.method === 'GET') {
     const settings = await getSettings(env);
     for (const key of ['fake_threshold', 'high_fake_threshold', 'daily_listing_limit', 'max_listings_per_hood']) settings[key] = Number(settings[key]);
@@ -99,7 +104,21 @@ async function apiRoute(request, env, url) {
   }
 
   if (path === '/api/settings' && request.method === 'POST') {
-    const input = await request.json();
+    let input;
+    if (request.headers.get('content-type')?.includes('application/json')) {
+      input = await request.json();
+    } else {
+      const form = Object.fromEntries(await request.formData());
+      input = {
+        ...form,
+        jev_weights: {
+          price_vs_district_avg: form.weight_price_vs_district_avg,
+          price_vs_size_ratio: form.weight_price_vs_size_ratio,
+          description_mismatch: form.weight_description_mismatch,
+          suspicious_keywords: form.weight_suspicious_keywords
+        }
+      };
+    }
     const fakeThreshold = Number(input.fake_threshold);
     const highThreshold = Number(input.high_fake_threshold);
     const dailyLimit = Number(input.daily_listing_limit);
@@ -110,7 +129,10 @@ async function apiRoute(request, env, url) {
       return json({ error: 'مقادیر تنظیمات معتبر نیستند.' }, 400);
     }
     const baitKeywords = Array.isArray(input.bait_keywords) ? input.bait_keywords : String(input.bait_keywords || '').split(/\r?\n/);
-    const weights = input.jev_weights || {};
+    let weights = input.jev_weights || {};
+    if (typeof weights === 'string') {
+      try { weights = JSON.parse(weights); } catch { return json({ error: 'وزن‌های ژو معتبر نیستند.' }, 400); }
+    }
     const weightKeys = ['price_vs_district_avg', 'price_vs_size_ratio', 'description_mismatch', 'suspicious_keywords'];
     const normalizedWeights = {};
     for (const key of weightKeys) {
@@ -181,8 +203,18 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
     <nav class="tabs" aria-label="بخش‌های پنل"><button class="tab active" data-tab="dashboard">📊 داشبورد</button><button class="tab" data-tab="listings">📋 آگهی‌ها</button><button class="tab" data-tab="logs">📊 لاگ‌ها</button><button class="tab" data-tab="settings">⚙️ تنظیمات</button></nav>
     <section class="panel active" id="panel-dashboard"><div class="section-head"><h2>وضعیت مناطق تهران</h2></div><div class="chart-grid"><article class="surface chart-box"><h3>تعداد آگهی در هر منطقه</h3><div class="chart-wrap"><canvas id="count-chart"></canvas></div></article><article class="surface chart-box"><h3>آگهی‌های فیک در هر منطقه</h3><div class="chart-wrap"><canvas id="fake-chart"></canvas></div></article></div><div class="surface table-wrap"><table class="data-table"><thead><tr><th>منطقه</th><th>کل آگهی</th><th>میانگین قیمت</th><th>درصد فیک</th><th>آخرین بررسی</th></tr></thead><tbody id="district-rows"></tbody></table></div></section>
     <section class="panel" id="panel-listings"><div class="section-head"><h2>آگهی‌ها</h2><button class="button" id="retry-all">تلاش دوباره برای ناموفق‌ها</button></div><div class="filters"><div class="filter-buttons"><button class="filter-button active" data-label="all">همه</button><button class="filter-button" data-label="real">تأییدشده</button><button class="filter-button" data-label="suspicious">مشکوک</button><button class="filter-button" data-label="fake">فیک</button><button class="filter-button" data-label="pending">در انتظار</button></div><select id="district-filter" aria-label="فیلتر منطقه"><option value="">همه مناطق</option></select></div><div class="listing-grid" id="listing-grid"></div><div class="pagination"><button class="button" id="previous-page">قبلی</button><span id="page-indicator">۱</span><button class="button" id="next-page">بعدی</button></div></section>
-    <section class="panel" id="panel-logs"><div class="section-head"><h2>گزارش درخواست‌ها</h2></div><div class="log-filters"><select id="log-service"><option value="">همه سرویس‌ها</option><option value="scraper">اسکرپر</option><option value="workers-ai">هوش مصنوعی</option><option value="jev">ژو</option><option value="system">سیستم</option></select><select id="log-status"><option value="">همه وضعیت‌ها</option><option value="success">موفق</option><option value="error">خطا</option></select></div><div class="surface log-list" id="log-list"></div></section>
-    <section class="panel" id="panel-settings"><div class="section-head"><h2>تنظیمات تحلیل</h2></div><form class="surface settings-form" id="settings-form"><div class="form-grid"><div class="field"><label for="fake-threshold">آستانه مشکوک</label><input id="fake-threshold" type="number" min="0" max="1" step="0.01" required></div><div class="field"><label for="high-threshold">آستانه فیک</label><input id="high-threshold" type="number" min="0" max="1" step="0.01" required></div><div class="field"><label for="daily-limit">حد روزانه بررسی هوش مصنوعی</label><input id="daily-limit" type="number" min="1" max="30" step="1" required></div><div class="field"><label for="hood-limit">حد آگهی از هر محله در هر اجرا</label><input id="hood-limit" type="number" min="1" max="2" step="1" required></div><div class="field wide"><label for="bait-keywords">عبارت‌های هشدار، هر عبارت در یک خط</label><textarea id="bait-keywords"></textarea></div><div class="field"><label for="weight-district">وزن اختلاف با میانگین منطقه</label><input id="weight-district" type="number" min="0" max="1" step="0.01"></div><div class="field"><label for="weight-sqm">وزن قیمت هر متر</label><input id="weight-sqm" type="number" min="0" max="1" step="0.01"></div><div class="field"><label for="weight-description">وزن ناسازگاری توضیحات</label><input id="weight-description" type="number" min="0" max="1" step="0.01"></div><div class="field"><label for="weight-keywords">وزن عبارت‌های مشکوک</label><input id="weight-keywords" type="number" min="0" max="1" step="0.01"></div></div><div class="form-actions"><button class="button primary" type="submit">ذخیره تنظیمات</button><span class="notice" id="settings-notice"></span></div></form></section>
+    <section class="panel" id="panel-logs"><div class="section-head"><h2>گزارش درخواست‌ها</h2></div><div class="log-filters"><select id="log-service"><option value="">همه سرویس‌ها</option><option value="scraper">اسکرپر</option><option value="scraper-discovery">کشف محله</option><option value="workers-ai">هوش مصنوعی</option><option value="jev">ژو</option><option value="system">سیستم</option></select><select id="log-status"><option value="">همه وضعیت‌ها</option><option value="success">موفق</option><option value="error">خطا</option></select></div><div class="surface log-list" id="log-list"></div></section>
+    <section class="panel" id="panel-settings"><div class="section-head"><h2>تنظیمات تحلیل</h2></div><form class="surface settings-form" id="settings-form"><div class="form-grid">
+      <div class="field"><label for="fake-threshold">آستانه مشکوک</label><input id="fake-threshold" name="fake_threshold" type="number" min="0" max="1" step="0.01" required></div>
+      <div class="field"><label for="high-threshold">آستانه فیک</label><input id="high-threshold" name="high_fake_threshold" type="number" min="0" max="1" step="0.01" required></div>
+      <div class="field"><label for="daily-limit">حد روزانه بررسی هوش مصنوعی</label><input id="daily-limit" name="daily_listing_limit" type="number" min="1" max="30" step="1" required></div>
+      <div class="field"><label for="hood-limit">حد آگهی از هر محله در هر اجرا</label><input id="hood-limit" name="max_listings_per_hood" type="number" min="1" max="2" step="1" required></div>
+      <div class="field wide"><label for="bait-keywords">عبارت‌های هشدار، هر عبارت در یک خط</label><textarea id="bait-keywords" name="bait_keywords"></textarea></div>
+      <div class="field"><label for="weight-district">وزن اختلاف با میانگین منطقه</label><input id="weight-district" name="weight_price_vs_district_avg" type="number" min="0" max="1" step="0.01"></div>
+      <div class="field"><label for="weight-sqm">وزن قیمت هر متر</label><input id="weight-sqm" name="weight_price_vs_size_ratio" type="number" min="0" max="1" step="0.01"></div>
+      <div class="field"><label for="weight-description">وزن ناسازگاری توضیحات</label><input id="weight-description" name="weight_description_mismatch" type="number" min="0" max="1" step="0.01"></div>
+      <div class="field"><label for="weight-keywords">وزن عبارت‌های مشکوک</label><input id="weight-keywords" name="weight_suspicious_keywords" type="number" min="0" max="1" step="0.01"></div>
+    </div><div class="form-actions"><button class="button primary" type="submit">ذخیره تنظیمات</button><span class="notice" id="settings-notice"></span></div></form></section>
   </main>
   <script>
     const state={page:1,label:'all',district:'',charts:{}};
@@ -212,14 +244,35 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 </body>
 </html>`;
 
-export async function serveUI() {
-  return html(DASHBOARD_HTML);
+export async function serveUI(env) {
+  let settings = {};
+  try {
+    const { results = [] } = await env.DB.prepare('SELECT key, value FROM settings').all();
+    settings = Object.fromEntries(results.map((row) => [row.key, row.value]));
+  } catch (error) {
+    await logError(env, 'system', '/', error);
+  }
+  let weights = {};
+  let baitKeywords = [];
+  try { weights = JSON.parse(settings.jev_weights || '{}'); } catch { /* Use defaults below. */ }
+  try { baitKeywords = JSON.parse(settings.bait_keywords || '[]'); } catch { /* Use an empty list. */ }
+  const rendered = DASHBOARD_HTML
+    .replace(/(<input id="fake-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.fake_threshold || '0.6')}"${suffix}`)
+    .replace(/(<input id="high-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.high_fake_threshold || '0.8')}"${suffix}`)
+    .replace(/(<input id="daily-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.daily_listing_limit || '30')}"${suffix}`)
+    .replace(/(<input id="hood-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.max_listings_per_hood || '2')}"${suffix}`)
+    .replace(/(<textarea id="bait-keywords"[^>]*>)[\s\S]*?(<\/textarea>)/, (_, prefix, suffix) => `${prefix}${escHtml(Array.isArray(baitKeywords) ? baitKeywords.join('\n') : '')}${suffix}`)
+    .replace(/(<input id="weight-district"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.price_vs_district_avg ?? '0.4')}"${suffix}`)
+    .replace(/(<input id="weight-sqm"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.price_vs_size_ratio ?? '0.25')}"${suffix}`)
+    .replace(/(<input id="weight-description"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.description_mismatch ?? '0.2')}"${suffix}`)
+    .replace(/(<input id="weight-keywords"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.suspicious_keywords ?? '0.15')}"${suffix}`);
+  return html(rendered);
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/' && request.method === 'GET') return serveUI();
+    if (url.pathname === '/' && request.method === 'GET') return serveUI(env);
     if (url.pathname.startsWith('/api/')) {
       try { return await apiRoute(request, env, url); }
       catch (error) {

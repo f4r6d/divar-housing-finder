@@ -14,6 +14,59 @@ export function extractTokensFromListPage(html) {
   return [...tokens];
 }
 
+export function extractNeighborhoodLinks(html) {
+  const links = new Set();
+  const collect = (value) => {
+    const normalized = String(value).replace(/\\\//g, '/').replace(/&amp;/gi, '&');
+    const pattern = /(?:https?:\/\/(?:www\.)?divar\.ir)?\/s\/tehran\/rent-residential\/([^/?#"'\\\s<>]+)/gi;
+    for (const match of normalized.matchAll(pattern)) {
+      let slug = match[1];
+      try { slug = decodeURIComponent(slug); } catch { /* Keep the original slug. */ }
+      links.add(`https://divar.ir/s/tehran/rent-residential/${slug}`);
+    }
+  };
+
+  collect(html);
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const match of scripts) {
+    const source = match[1].replace(/\\\//g, '/').replace(/&quot;/gi, '"').replace(/&amp;/gi, '&');
+    collect(source);
+    try {
+      const value = JSON.parse(source);
+      const visit = (item) => {
+        if (typeof item === 'string') collect(item);
+        else if (Array.isArray(item)) item.forEach(visit);
+        else if (item && typeof item === 'object') Object.values(item).forEach(visit);
+      };
+      visit(value);
+    } catch { /* Script content may not be JSON. */ }
+  }
+  return [...links];
+}
+
+export async function discoverRealSlugs(env) {
+  const url = 'https://divar.ir/s/tehran/rent-residential';
+  try {
+    const response = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
+    const html = await response.text();
+    if (!response.ok) {
+      await logError(env, 'scraper-discovery', url, `Landing page returned HTTP ${response.status}`, response.status, html.slice(0, 500));
+      return [];
+    }
+
+    const slugs = extractNeighborhoodLinks(html).map((link) => link.split('/').at(-1));
+    await env.DB.prepare(`
+      INSERT INTO request_logs (service, url, status, error, response_snippet)
+      VALUES ('scraper-discovery', ?, ?, NULL, ?)
+    `).bind(url, response.status, JSON.stringify(slugs)).run();
+    await logSuccess(env, 'scraper-discovery', url, `Discovered ${slugs.length} neighborhood slugs`, response.status);
+    return slugs;
+  } catch (error) {
+    await logError(env, 'scraper-discovery', url, error);
+    return [];
+  }
+}
+
 function readMeta(html, key, attribute = 'property') {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp(`<meta\\b(?=[^>]*\\b${attribute}=["']${escaped}["'])[^>]*\\bcontent=["']([^"']*)["'][^>]*>|<meta\\b(?=[^>]*\\bcontent=["']([^"']*)["'])[^>]*\\b${attribute}=["']${escaped}["'][^>]*>`, 'i');
