@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "divar-housing-finder",
+  "main": "src/index.js",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "divar-housing-db",
+    "database_id": "PLACEHOLDER_REPLACE_LATER"
+  }],
+  "ai": { "binding": "AI" },
+  "workflows": [{
+    "name": "divar-scrape",
+    "binding": "DIVAR_WORKFLOW",
+    "class_name": "DivarScrapeWorkflow",
+    "concurrency": { "limit": 1 }
+  }],
+  "triggers": { "crons": ["0 */6 * * *"] },
+  "vars": {
+    "DIVAR_BASE_URL": "https://divar.ir/s/tehran/rent-residential",
+    "WORKER_URL": "https://divar-housing-finder.workers.dev"
+  }
+}
