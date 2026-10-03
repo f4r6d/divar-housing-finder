@@ -8,7 +8,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "divar-housing-db",
-    "database_id": "PLACEHOLDER_REPLACE_LATER"
+    "database_id": "d87a157d-ceeb-431f-88c3-f7fb3f8f6e24"
   }],
   "ai": { "binding": "AI" },
   "workflows": [{
@@ -20,6 +20,6 @@
   "triggers": { "crons": ["0 */6 * * *"] },
   "vars": {
     "DIVAR_BASE_URL": "https://divar.ir/s/tehran/rent-residential",
-    "WORKER_URL": "https://divar-housing-finder.workers.dev"
+    "WORKER_URL": "https://divar-housing-finder.lizadfarshid.workers.dev"
   }
 }
