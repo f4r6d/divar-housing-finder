@@ -2,21 +2,6 @@ import { isAiQuotaExhausted, logError, logSuccess, markAiQuotaExhausted } from '
 
 const MODEL = '@cf/qwen/qwen2.5-7b-instruct';
 
-function htmlToText(html) {
-  return html
-    .replace(/<!--([\s\S]*?)-->/g, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 4000);
-}
-
 function parseModelResponse(result) {
   const output = typeof result === 'string' ? result : (result?.response ?? result?.output_text ?? result);
   if (typeof output === 'object' && output !== null) return output;
@@ -32,21 +17,12 @@ export async function extractListingData(env, listing) {
   }
 
   try {
-    const response = await fetch(listing.url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
-        Accept: 'text/html,application/xhtml+xml',
-        Referer: 'https://divar.ir/'
-      }
-    });
-    const html = await response.text();
-    if (!response.ok || html.length < 5000 || /captcha|دسترسی غیرمجاز/i.test(html)) {
-      await logError(env, 'workers-ai', listing.url, 'Could not fetch listing text for extraction', response.status);
+    const text = [listing.description, listing.neighborhood].filter(Boolean).join('\n').slice(0, 4000);
+    if (!listing.title && !text) {
+      await logError(env, 'workers-ai', listing.url, 'Listing summary has no text to extract');
       return null;
     }
 
-    const text = htmlToText(html);
     const result = await env.AI.run(MODEL, {
       messages: [
         { role: 'system', content: 'Extract housing rental listing facts. Return only valid JSON. Preserve numeric amounts in toman. Handle Persian and Arabic numerals.' },

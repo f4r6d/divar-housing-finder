@@ -1,126 +1,100 @@
-import { logError, logSuccess, parseLocalizedNumber } from './utils.js';
+import { logError, logSuccess } from './utils.js';
 
-const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
-  Accept: 'text/html,application/xhtml+xml',
-  Referer: 'https://divar.ir/'
+const API_URL = 'https://api.divar.ir/v8/postlist/w/search';
+const API_HEADERS = {
+  'Content-Type': 'application/json',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+  Referer: 'https://divar.ir/',
+  Origin: 'https://divar.ir'
 };
 
-export function extractTokensFromListPage(html) {
-  const tokens = new Set();
-  const pattern = /href\s*=\s*["'](?:https?:\/\/(?:www\.)?divar\.ir)?\/v\/([A-Za-z0-9]+)(?:[/?#][^"']*)?["']/gi;
-  for (const match of html.matchAll(pattern)) tokens.add(match[1]);
-  return [...tokens];
+function textValue(value) {
+  return typeof value === 'string' ? value : value?.text || value?.value || '';
 }
 
-export function extractNeighborhoodLinks(html) {
-  const links = new Set();
-  const collect = (value) => {
-    const normalized = String(value).replace(/\\\//g, '/').replace(/&amp;/gi, '&');
-    const pattern = /(?:https?:\/\/(?:www\.)?divar\.ir)?\/s\/tehran\/rent-residential\/([^/?#"'\\\s<>]+)/gi;
-    for (const match of normalized.matchAll(pattern)) {
-      let slug = match[1];
-      try { slug = decodeURIComponent(slug); } catch { /* Keep the original slug. */ }
-      links.add(`https://divar.ir/s/tehran/rent-residential/${slug}`);
+function imageValue(data) {
+  const image = data.image_url ?? data.image?.url ?? data.image?.[0]?.url ?? data.images?.[0]?.url ?? '';
+  return typeof image === 'string' ? image : image?.url || '';
+}
+
+export function extractTokensFromApiResponse(response) {
+  const widgets = response?.list_widgets || response?.data?.list_widgets || [];
+  const listings = new Map();
+  for (const widget of widgets) {
+    if (!['POST', 'POST_ROW'].includes(widget?.widget_type) || !widget.data) continue;
+    const data = widget.data;
+    const token = data.token || data.action?.payload?.token;
+    if (!token || listings.has(token)) continue;
+    const neighborhood = textValue(data.action?.payload?.web_info?.district_persian) || textValue(data.middle_description_text);
+    const description = [data.description, data.top_description_text, data.middle_description_text, data.bottom_description_text]
+      .map(textValue)
+      .filter(Boolean)
+      .join(' | ');
+    listings.set(token, {
+      token,
+      title: textValue(data.title),
+      description: description || neighborhood,
+      neighborhood,
+      image_url: imageValue(data)
+    });
+  }
+  return [...listings.values()];
+}
+
+export async function fetchListingsPage(env, cityId, category, page, districtIds, responseMetadata = {}) {
+  const payload = {
+    city_ids: [String(cityId)],
+    search_data: {
+      form_data: {
+        data: {
+          category: { str: { value: category } },
+          districts: { str: { value: districtIds.map(String).join(',') } }
+        }
+      }
+    },
+    pagination_data: {
+      '@type': 'type.googleapis.com/post_list.PaginationData',
+      page,
+      limit: 30
     }
   };
 
-  collect(html);
-  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
-  for (const match of scripts) {
-    const source = match[1].replace(/\\\//g, '/').replace(/&quot;/gi, '"').replace(/&amp;/gi, '&');
-    collect(source);
-    try {
-      const value = JSON.parse(source);
-      const visit = (item) => {
-        if (typeof item === 'string') collect(item);
-        else if (Array.isArray(item)) item.forEach(visit);
-        else if (item && typeof item === 'object') Object.values(item).forEach(visit);
-      };
-      visit(value);
-    } catch { /* Script content may not be JSON. */ }
-  }
-  return [...links];
-}
-
-export async function discoverRealSlugs(env) {
-  const url = 'https://divar.ir/s/tehran/rent-residential';
   try {
-    const response = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
-    const html = await response.text();
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: API_HEADERS,
+      body: JSON.stringify(payload)
+    });
+    const rawResponse = await response.text();
+    responseMetadata.httpStatus = response.status;
+    responseMetadata.rawResponse = rawResponse;
+
     if (!response.ok) {
-      await logError(env, 'scraper-discovery', url, `Landing page returned HTTP ${response.status}`, response.status, html.slice(0, 500));
-      return [];
-    }
-
-    const slugs = extractNeighborhoodLinks(html).map((link) => link.split('/').at(-1));
-    await env.DB.prepare(`
-      INSERT INTO request_logs (service, url, status, error, response_snippet)
-      VALUES ('scraper-discovery', ?, ?, NULL, ?)
-    `).bind(url, response.status, JSON.stringify(slugs)).run();
-    await logSuccess(env, 'scraper-discovery', url, `Discovered ${slugs.length} neighborhood slugs`, response.status);
-    return slugs;
-  } catch (error) {
-    await logError(env, 'scraper-discovery', url, error);
-    return [];
-  }
-}
-
-function readMeta(html, key, attribute = 'property') {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`<meta\\b(?=[^>]*\\b${attribute}=["']${escaped}["'])[^>]*\\bcontent=["']([^"']*)["'][^>]*>|<meta\\b(?=[^>]*\\bcontent=["']([^"']*)["'])[^>]*\\b${attribute}=["']${escaped}["'][^>]*>`, 'i');
-  const match = html.match(pattern);
-  return (match?.[1] || match?.[2] || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
-}
-
-function extractNumber(pattern, text) {
-  const match = text.match(pattern);
-  return match ? parseLocalizedNumber(match[1]) : null;
-}
-
-export async function fetchListingDetail(token, env) {
-  const url = `https://divar.ir/v/${encodeURIComponent(token)}`;
-  try {
-    const response = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
-    const html = await response.text();
-    if (!response.ok || html.length < 5000 || /captcha|دسترسی غیرمجاز/i.test(html)) {
-      await logError(env, 'scraper', url, 'Listing page blocked, unavailable, or too short', response.status, html.slice(0, 500));
+      const message = `HTTP ${response.status} - ${rawResponse.slice(0, 300)}`;
+      responseMetadata.error = message;
+      await logError(env, 'scraper', API_URL, message, response.status, rawResponse.slice(0, 500));
       return null;
     }
 
-    const title = readMeta(html, 'og:title') || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
-    const description = readMeta(html, 'og:description') || readMeta(html, 'description', 'name');
-    const imageUrl = readMeta(html, 'og:image');
-    const plain = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;|&#160;/gi, ' ')
-      .replace(/&amp;/gi, '&');
-    const number = '[0-9۰-۹٠-٩٬،,]+';
-    const price = extractNumber(new RegExp(`قیمت[^\\d۰-۹٠-٩]{0,30}(${number})\\s*(?:تومان|تومن)`, 'i'), plain);
-    const size = extractNumber(new RegExp(`(${number})\\s*(?:متر(?:\\s*مربع)?|مترمربع)`, 'i'), plain);
-    const rooms = extractNumber(new RegExp(`(${number})\\s*اتاق`, 'i'), plain);
-    await logSuccess(env, 'scraper', url, 'Listing page fetched', response.status);
-    return { token, url, title, description, image_url: imageUrl, price_toman: price, size_m2: size, rooms, html };
-  } catch (error) {
-    await logError(env, 'scraper', url, error);
-    return null;
-  }
-}
-
-export async function fetchNeighborhoodPage(slug, baseUrl, env) {
-  const url = `${baseUrl.replace(/\/$/, '')}/${encodeURIComponent(slug)}`;
-  try {
-    const response = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
-    const html = await response.text();
-    if (!response.ok || html.length < 5000 || /captcha|دسترسی غیرمجاز/i.test(html)) {
-      await logError(env, 'scraper', url, 'Neighborhood page blocked, unavailable, or too short', response.status, html.slice(0, 500));
+    let data;
+    try {
+      data = JSON.parse(rawResponse);
+    } catch (error) {
+      const message = `HTTP ${response.status} - Invalid JSON: ${error.message}`;
+      responseMetadata.error = message;
+      await logError(env, 'scraper', API_URL, message, response.status, rawResponse.slice(0, 500));
       return null;
     }
-    return { html, tokens: extractTokensFromListPage(html), url };
+
+    const count = extractTokensFromApiResponse(data).length;
+    await logSuccess(env, 'scraper', API_URL, `Got ${count} listings from district ${districtIds.join(',')}`, response.status);
+    return data;
   } catch (error) {
-    await logError(env, 'scraper', url, error);
+    const message = `HTTP 0 - ${error?.message || error}`;
+    responseMetadata.httpStatus = 0;
+    responseMetadata.rawResponse = '';
+    responseMetadata.error = message;
+    await logError(env, 'scraper', API_URL, message, 0);
     return null;
   }
 }

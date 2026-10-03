@@ -1,10 +1,10 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { extractListingData } from './extractor.js';
 import { evaluateListing } from './jev.js';
-import { extractNeighborhoodLinks, fetchListingDetail, fetchNeighborhoodPage } from './scraper.js';
+import { extractTokensFromApiResponse, fetchListingsPage } from './scraper.js';
 import { getSettings, isAiQuotaExhausted, logError, logSuccess } from './utils.js';
 
-const DEFAULT_BASE_URL = 'https://divar.ir/s/tehran/rent-residential';
+const DIVAR_DISTRICT_IDS = ['992'];
 
 function parseSetting(settings, key, fallback) {
   const value = Number(settings[key]);
@@ -21,39 +21,30 @@ async function reserveDailyAiCall(env, limit) {
   return Boolean(row);
 }
 
-async function scrapeNeighborhood(env, neighborhood, settings, dailyRemaining) {
-  const maxPerHood = Math.min(2, parseSetting(settings, 'max_listings_per_hood', 2), dailyRemaining);
-  const page = await fetchNeighborhoodPage(neighborhood.slug, env.DIVAR_BASE_URL || DEFAULT_BASE_URL, env);
+async function scrapeDistrict(env, districtId, dailyRemaining) {
+  const page = await fetchListingsPage(env, '1', 'residential-rent', 1, [districtId]);
+  if (!page) return { district_id: districtId, inserted: 0 };
+  const candidates = extractTokensFromApiResponse(page);
+  if (candidates.length === 0 || dailyRemaining <= 0) return { district_id: districtId, inserted: 0 };
+
+  const maxPerDistrict = Math.min(2, dailyRemaining);
+  const tokenList = candidates.map((listing) => listing.token);
+  const existing = await env.DB.prepare(`
+    SELECT divar_token FROM listings WHERE divar_token IN (${tokenList.map(() => '?').join(',')})
+  `).bind(...tokenList).all();
+  const knownTokens = new Set((existing.results || []).map((row) => row.divar_token));
+  const newListings = candidates.filter((listing) => !knownTokens.has(listing.token)).slice(0, maxPerDistrict);
   let inserted = 0;
-  if (page?.tokens.length) {
-    const candidates = page.tokens.slice(0, 200);
-    const existing = await env.DB.prepare('SELECT divar_token FROM listings WHERE divar_token IN (' + candidates.map(() => '?').join(',') + ')')
-      .bind(...candidates).all();
-    const knownTokens = new Set((existing.results || []).map((row) => row.divar_token));
-    const newTokens = candidates.filter((token) => !knownTokens.has(token)).slice(0, maxPerHood);
-
-    for (const token of newTokens) {
-      const listing = await fetchListingDetail(token, env);
-      if (!listing) continue;
-      const write = await env.DB.prepare(`
-        INSERT OR IGNORE INTO listings
-          (divar_token, url, title, price_toman, size_m2, rooms, neighborhood_id, district_id, description, image_url, extraction_done)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-      `).bind(token, listing.url, listing.title, listing.price_toman, listing.size_m2, listing.rooms,
-        neighborhood.id, neighborhood.district_id, listing.description, listing.image_url).run();
-      if (Number(write.meta?.changes || 0) > 0) inserted += 1;
-    }
+  for (const listing of newListings) {
+    const write = await env.DB.prepare(`
+      INSERT OR IGNORE INTO listings
+        (divar_token, url, title, description, image_url, extraction_done)
+      VALUES (?, ?, ?, ?, ?, 0)
+    `).bind(listing.token, `https://divar.ir/v/${encodeURIComponent(listing.token)}`,
+      listing.title, listing.description, listing.image_url).run();
+    if (Number(write.meta?.changes || 0) > 0) inserted += 1;
   }
-
-  await env.DB.prepare(`
-    INSERT INTO scrape_state (neighborhood_id, last_scraped_at, total_scraped, consecutive_empty)
-    VALUES (?, datetime('now'), ?, ?)
-    ON CONFLICT(neighborhood_id) DO UPDATE SET
-      last_scraped_at = datetime('now'),
-      total_scraped = total_scraped + excluded.total_scraped,
-      consecutive_empty = CASE WHEN excluded.total_scraped = 0 THEN consecutive_empty + 1 ELSE 0 END
-  `).bind(neighborhood.id, inserted, inserted === 0 ? 1 : 0).run();
-  return { neighborhood_id: neighborhood.id, found: page?.tokens.length || 0, inserted };
+  return { district_id: districtId, found: candidates.length, inserted };
 }
 
 async function extractPending(env, step, dailyLimit, maximum = 10) {
@@ -108,61 +99,28 @@ async function evaluatePending(env, step) {
 export class DivarScrapeWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const payload = event.payload || {};
-    const reachability = await step.do('test-divar', async () => {
-      const url = 'https://divar.ir/s/tehran/rent-residential';
-      try {
-        const response = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
-            Accept: 'text/html,application/xhtml+xml',
-            Referer: 'https://divar.ir/'
-          }
-        });
-        const html = await response.text();
-        return {
-          status: response.status,
-          htmlLength: html.length,
-          hasCaptcha: html.includes('captcha') || html.includes('کپچا'),
-          sampleLinks: extractNeighborhoodLinks(html).slice(0, 10)
-        };
-      } catch (error) {
-        await logError(this.env, 'scraper', url, error);
-        return { status: 0, htmlLength: 0, hasCaptcha: false, sampleLinks: [], error: String(error?.message || error) };
-      }
-    });
-    await step.do('log-divar-reachability', async () => logSuccess(this.env, 'system', 'workflow', JSON.stringify(reachability)));
-    const selection = await step.do('select-neighborhoods', async () => {
+    const selection = await step.do('select-districts', async () => {
       if (payload.retryListingId) {
         await this.env.DB.prepare('UPDATE listings SET extraction_done = 0, jev_done = 0 WHERE id = ? AND extraction_done = -1')
           .bind(Number(payload.retryListingId)).run();
-        return { settings: await getSettings(this.env), neighborhoods: [], retry: true };
+        return { settings: await getSettings(this.env), districts: [], retry: true };
       }
       if (payload.retryAllFailed) {
         await this.env.DB.prepare('UPDATE listings SET extraction_done = 0, jev_done = 0 WHERE extraction_done = -1').run();
-        return { settings: await getSettings(this.env), neighborhoods: [], retry: true };
+        return { settings: await getSettings(this.env), districts: [], retry: true };
       }
-      const loadedSettings = await getSettings(this.env);
-      const neighborhoods = await this.env.DB.prepare(`
-        SELECT n.id, n.slug, n.name_fa, n.district_id
-        FROM neighborhoods n
-        LEFT JOIN scrape_state s ON s.neighborhood_id = n.id
-        WHERE n.is_active = 1
-        ORDER BY COALESCE(s.last_scraped_at, '1970-01-01 00:00:00') ASC, n.id ASC
-        LIMIT 5
-      `).all();
-      return { settings: loadedSettings, neighborhoods: neighborhoods.results || [], retry: false };
+      return { settings: await getSettings(this.env), districts: DIVAR_DISTRICT_IDS, retry: false };
     });
 
     if (!selection.retry) {
       const dailyLimit = Math.min(30, parseSetting(selection.settings, 'daily_listing_limit', 30));
       const dailyCount = await step.do('count-todays-scrapes', async () => this.env.DB.prepare("SELECT COUNT(*) AS count FROM listings WHERE date(scraped_at) = date('now')").first());
       let remaining = Math.max(0, dailyLimit - Number(dailyCount?.count || 0));
-      for (let index = 0; index < selection.neighborhoods.length && remaining > 0; index += 1) {
-        const neighborhood = selection.neighborhoods[index];
-        const result = await step.do(`scrape-${neighborhood.slug}`, async () => scrapeNeighborhood(this.env, neighborhood, selection.settings, remaining));
+      for (let index = 0; index < selection.districts.length && remaining > 0; index += 1) {
+        const districtId = selection.districts[index];
+        const result = await step.do(`scrape-district-${districtId}`, async () => scrapeDistrict(this.env, districtId, remaining));
         remaining -= result.inserted;
-        if (index < selection.neighborhoods.length - 1) await step.sleep(`rate-limit-${neighborhood.slug}`, '3 seconds');
+        if (index < selection.districts.length - 1) await step.sleep(`rate-limit-${districtId}`, '2 seconds');
       }
     }
 

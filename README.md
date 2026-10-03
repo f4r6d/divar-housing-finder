@@ -2,13 +2,13 @@
 
 A Cloudflare Workers application that samples public Tehran rental listings on Divar.ir, extracts structured rental details with Workers AI, and flags unusually low or potentially misleading prices. The admin dashboard and API are rendered/served by the Worker; the database is Cloudflare D1.
 
-The project does not use the Divar API, browser automation, or npm dependencies at runtime. Scraping uses HTML requests and regular expressions, with a three-second pause between neighborhood pages. Neighborhood slugs are approximate seed values and should be verified before enabling scheduled collection.
+The project does not use Divar's official API, browser automation, or npm dependencies at runtime. Scraping uses the same unauthenticated JSON search endpoint used by Divar's web client, with a two-second pause between district requests. The endpoint and district IDs are internal and may change without notice.
 
 ## Features
 
 - Persian, RTL dashboard with district charts, listing filters, request logs, and editable analysis settings.
-- Durable Cloudflare Workflow for neighborhood sampling, extraction, evaluation, and log cleanup.
-- At most two new listings per neighborhood in a workflow run, and a hard maximum of 30 Workers AI calls per UTC day.
+- Durable Cloudflare Workflow for district-based sampling, extraction, evaluation, and log cleanup.
+- At most two new listings per district in a workflow run, and a hard maximum of 30 Workers AI calls per UTC day.
 - Workers AI extraction with a 24-hour quota lock after an allocation error.
 - Optional TypeSafe Jev evaluation using `TYPESAFE_API_KEY`, with a local heuristic when no key is configured or the service is unavailable.
 - D1 schema and seed data for all 22 Tehran districts and 110 main-neighborhood entries.
@@ -78,6 +78,7 @@ Run schema initialization before seeding. The SQL uses `IF NOT EXISTS` and `INSE
 - `GET /api/listings?district=1&fake_label=suspicious&page=1` — filtered, paginated listings. `fake_label` also accepts `real`, `fake`, `unknown`, and `pending`.
 - `GET /api/logs?service=scraper&limit=100` — request logs; optional `status=success` or `status=error`.
 - `GET /api/settings` and `POST /api/settings` — read and update analysis settings.
+- `GET /api/test-api` — test the Divar JSON search endpoint and return a response preview and sample tokens.
 - `GET /api/force-run` — start a workflow.
 - `GET /api/retry/:id` and `POST /api/retry-all-failed` — retry failed extraction.
 - `GET /api/reset-listings` — delete listings while preserving district and neighborhood seed data.
@@ -86,7 +87,7 @@ Run schema initialization before seeding. The SQL uses `IF NOT EXISTS` and `INSE
 
 The dashboard intentionally has no authentication, as requested. Treat its deployed URL as private, do not expose it publicly, and understand that an unprotected URL is not access control. The reset endpoint is destructive and is also unauthenticated.
 
-Divar may block automated requests or change its HTML at any time. A block/captcha or a response shorter than the configured minimum is logged and skipped. Seed slugs are estimates, not verified Divar routes. Confirm the site's applicable terms and local requirements before operating a scraper, and monitor request logs and Cloudflare usage. No listing data is guaranteed accurate; fake-price labels are signals for review, not a definitive claim about an advertiser.
+Divar may block automated requests or change its internal JSON endpoint at any time. HTTP and parsing errors are recorded in request logs. The current scraper uses Divar district ID `992` for testing; district-to-database mappings must be established before expanding the district list. Confirm the site's applicable terms and local requirements before operating a scraper, and monitor request logs and Cloudflare usage. No listing data is guaranteed accurate; fake-price labels are signals for review, not a definitive claim about an advertiser.
 
 ## Project Structure
 

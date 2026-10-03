@@ -1,5 +1,5 @@
 import { DivarScrapeWorkflow } from './workflow.js';
-import { discoverRealSlugs } from './scraper.js';
+import { extractTokensFromApiResponse, fetchListingsPage } from './scraper.js';
 import { escHtml, getSettings, json, logError } from './utils.js';
 
 export { DivarScrapeWorkflow };
@@ -91,8 +91,27 @@ async function apiRoute(request, env, url) {
     return json(result.results || []);
   }
 
-  if (path === '/api/discover-slugs' && request.method === 'GET') {
-    return json(await discoverRealSlugs(env));
+  if (path === '/api/test-api' && request.method === 'GET') {
+    const metadata = {};
+    const response = await fetchListingsPage(env, '1', 'residential-rent', 1, ['992'], metadata);
+    const listings = extractTokensFromApiResponse(response);
+    if (!response) {
+      return json({
+        success: false,
+        httpStatus: metadata.httpStatus || 0,
+        listingsCount: 0,
+        sampleTokens: [],
+        rawResponse: String(metadata.rawResponse || '').slice(0, 500),
+        error: metadata.error || 'The Divar API request failed.'
+      }, metadata.httpStatus >= 400 && metadata.httpStatus < 600 ? metadata.httpStatus : 502);
+    }
+    return json({
+      success: true,
+      httpStatus: metadata.httpStatus,
+      listingsCount: listings.length,
+      sampleTokens: listings.slice(0, 5).map((listing) => listing.token),
+      rawResponse: String(metadata.rawResponse || '').slice(0, 500)
+    });
   }
 
   if (path === '/api/settings' && request.method === 'GET') {
@@ -203,7 +222,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
     <nav class="tabs" aria-label="بخش‌های پنل"><button class="tab active" data-tab="dashboard">📊 داشبورد</button><button class="tab" data-tab="listings">📋 آگهی‌ها</button><button class="tab" data-tab="logs">📊 لاگ‌ها</button><button class="tab" data-tab="settings">⚙️ تنظیمات</button></nav>
     <section class="panel active" id="panel-dashboard"><div class="section-head"><h2>وضعیت مناطق تهران</h2></div><div class="chart-grid"><article class="surface chart-box"><h3>تعداد آگهی در هر منطقه</h3><div class="chart-wrap"><canvas id="count-chart"></canvas></div></article><article class="surface chart-box"><h3>آگهی‌های فیک در هر منطقه</h3><div class="chart-wrap"><canvas id="fake-chart"></canvas></div></article></div><div class="surface table-wrap"><table class="data-table"><thead><tr><th>منطقه</th><th>کل آگهی</th><th>میانگین قیمت</th><th>درصد فیک</th><th>آخرین بررسی</th></tr></thead><tbody id="district-rows"></tbody></table></div></section>
     <section class="panel" id="panel-listings"><div class="section-head"><h2>آگهی‌ها</h2><button class="button" id="retry-all">تلاش دوباره برای ناموفق‌ها</button></div><div class="filters"><div class="filter-buttons"><button class="filter-button active" data-label="all">همه</button><button class="filter-button" data-label="real">تأییدشده</button><button class="filter-button" data-label="suspicious">مشکوک</button><button class="filter-button" data-label="fake">فیک</button><button class="filter-button" data-label="pending">در انتظار</button></div><select id="district-filter" aria-label="فیلتر منطقه"><option value="">همه مناطق</option></select></div><div class="listing-grid" id="listing-grid"></div><div class="pagination"><button class="button" id="previous-page">قبلی</button><span id="page-indicator">۱</span><button class="button" id="next-page">بعدی</button></div></section>
-    <section class="panel" id="panel-logs"><div class="section-head"><h2>گزارش درخواست‌ها</h2></div><div class="log-filters"><select id="log-service"><option value="">همه سرویس‌ها</option><option value="scraper">اسکرپر</option><option value="scraper-discovery">کشف محله</option><option value="workers-ai">هوش مصنوعی</option><option value="jev">ژو</option><option value="system">سیستم</option></select><select id="log-status"><option value="">همه وضعیت‌ها</option><option value="success">موفق</option><option value="error">خطا</option></select></div><div class="surface log-list" id="log-list"></div></section>
+    <section class="panel" id="panel-logs"><div class="section-head"><h2>گزارش درخواست‌ها</h2></div><div class="log-filters"><select id="log-service"><option value="">همه سرویس‌ها</option><option value="scraper">اسکرپر</option><option value="workers-ai">هوش مصنوعی</option><option value="jev">ژو</option><option value="system">سیستم</option></select><select id="log-status"><option value="">همه وضعیت‌ها</option><option value="success">موفق</option><option value="error">خطا</option></select></div><div class="surface log-list" id="log-list"></div></section>
     <section class="panel" id="panel-settings"><div class="section-head"><h2>تنظیمات تحلیل</h2></div><form class="surface settings-form" id="settings-form"><div class="form-grid">
       <div class="field"><label for="fake-threshold">آستانه مشکوک</label><input id="fake-threshold" name="fake_threshold" type="number" min="0" max="1" step="0.01" required></div>
       <div class="field"><label for="high-threshold">آستانه فیک</label><input id="high-threshold" name="high_fake_threshold" type="number" min="0" max="1" step="0.01" required></div>

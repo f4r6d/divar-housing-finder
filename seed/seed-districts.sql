@@ -1,3 +1,6 @@
+-- NOTE: The neighborhoods table is no longer used for scraping (Divar's HTML is SPA-only).
+-- Scraping now uses the internal API at api.divar.ir/v8/postlist/w/search with district IDs.
+-- District IDs will be discovered and added separately.
 PRAGMA foreign_keys = ON;
 
 INSERT OR IGNORE INTO districts (id, name_fa, name_en, slug) VALUES
@@ -24,7 +27,6 @@ INSERT OR IGNORE INTO districts (id, name_fa, name_en, slug) VALUES
   (21, 'منطقه ۲۱', 'District 21', 'district-21'),
   (22, 'منطقه ۲۲', 'District 22', 'district-22');
 
--- Slugs below are PLACEHOLDERS. Run /api/discover-slugs to get real ones.
 INSERT OR IGNORE INTO neighborhoods (district_id, name_fa, slug) VALUES
   (1, 'تجریش', 'tehran-tajrish'), (1, 'زعفرانیه', 'tehran-zaferanieh'), (1, 'شمیران', 'tehran-shemiran'), (1, 'الهیه', 'tehran-elahiyeh'), (1, 'نیاوران', 'tehran-niavaran'),
   (2, 'شهرک غرب', 'tehran-shahrak-gharb'), (2, 'سعادت‌آباد', 'tehran-saadatabad'), (2, 'پونک', 'tehran-punak'), (2, 'شهرآرا', 'tehran-shahrara'), (2, 'گیشا', 'tehran-gisha'),
