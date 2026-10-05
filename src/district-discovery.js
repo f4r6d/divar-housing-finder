@@ -83,10 +83,9 @@ export async function backfillRegionAssignments(env) {
     await env.DB.batch(updates.slice(offset, offset + 100));
   }
   const neighborhoods = await env.DB.prepare('SELECT slug, name_fa, region_id FROM districts WHERE region_id IS NOT NULL').all();
-  const listings = await env.DB.prepare('SELECT id, title, description FROM listings WHERE region_id IS NULL').all();
+  const listings = await env.DB.prepare('SELECT id, title FROM listings WHERE region_id IS NULL').all();
   const listingUpdates = (listings.results || []).flatMap((listing) => {
-    const match = neighborhoodFromText(listing.title, neighborhoods.results || {}) ||
-      neighborhoodFromText(listing.description, neighborhoods.results || {});
+    const match = neighborhoodFromText(listing.title, neighborhoods.results || []);
     return match ? [env.DB.prepare('UPDATE listings SET district_slug = ?, region_id = ? WHERE id = ?')
       .bind(match.slug, match.region_id, listing.id)] : [];
   });
