@@ -1,4 +1,5 @@
 import { getSettings, logError, logSuccess } from './utils.js';
+import { depositEquivalentToman } from './rental-pricing.js';
 
 const DEFAULT_WEIGHTS = {
   price_vs_district_avg: 0.4,
@@ -22,23 +23,23 @@ function getNoul(result, key, fallback = 0) {
   return value === undefined || value === null ? fallback : clamp(value);
 }
 
-function listingMonthlyPrice(listing) {
-  return numeric(listing.rent_toman || listing.price_toman);
+function listingNormalizedPrice(listing) {
+  return numeric(listing.deposit_equivalent_toman || depositEquivalentToman(listing));
 }
 
 async function getDistrictStats(env, listing, supplied) {
   if (supplied?.avg_price || supplied?.avg_price_per_sqm) return supplied;
   const row = await env.DB.prepare(`
-    SELECT AVG(COALESCE(NULLIF(rent_toman, 0), price_toman)) AS avg_price,
-           AVG(CASE WHEN size_m2 > 0 THEN COALESCE(NULLIF(rent_toman, 0), price_toman) / size_m2 END) AS avg_price_per_sqm
+        SELECT AVG(COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman)) AS avg_price,
+          AVG(CASE WHEN size_m2 > 0 THEN COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman) / size_m2 END) AS avg_price_per_sqm
     FROM listings
-    WHERE district_id = ? AND extraction_done = 1 AND COALESCE(NULLIF(rent_toman, 0), price_toman) > 0
+        WHERE district_id = ? AND extraction_done = 1 AND COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman) > 0
   `).bind(listing.district_id).first();
   return row || {};
 }
 
 async function heuristicResult(env, listing, districtStats, settings) {
-  const price = listingMonthlyPrice(listing);
+  const price = listingNormalizedPrice(listing);
   const size = numeric(listing.size_m2);
   const pricePerSqm = price > 0 && size > 0 ? price / size : 0;
   const districtPricePerSqm = numeric(districtStats.avg_price_per_sqm);
@@ -67,7 +68,7 @@ function safeJson(value, fallback) {
 export async function evaluateListing(env, listing, suppliedDistrictStats) {
   const settings = await getSettings(env);
   const districtStats = await getDistrictStats(env, listing, suppliedDistrictStats);
-  const price = listingMonthlyPrice(listing);
+  const price = listingNormalizedPrice(listing);
   const size = numeric(listing.size_m2);
   const pricePerSqm = price > 0 && size > 0 ? price / size : 0;
   const districtAverage = numeric(districtStats.avg_price);
@@ -87,7 +88,7 @@ export async function evaluateListing(env, listing, suppliedDistrictStats) {
           model: 'jev-1.13.0',
           state: JSON.stringify({ title: listing.title, description: listing.description, price_toman: listing.price_toman, rent_toman: listing.rent_toman, deposit_toman: listing.deposit_toman, size_m2: size, rooms: listing.rooms, price_per_sqm: pricePerSqm, district_avg_price: districtAverage, district_avg_price_per_sqm: districtAveragePerSqm }),
           questions: {
-            is_price_realistic: { type: 'noul', instructions: 'Return 1 if the Tehran rental price is realistic for its district, 0 if it is clearly implausibly low or bait.' },
+            is_price_realistic: { type: 'noul', instructions: 'Judge the Tehran rental listing using its deposit-equivalent price (deposit plus monthly rent multiplied by 30), normalized per square meter against the district average. Return 1 if realistic, 0 if clearly implausibly low or bait.' },
             has_bait_signals: { type: 'noul', instructions: 'Return 1 if this listing contains deceptive bait-price or urgency signals, otherwise 0.' },
             description_matches_price: { type: 'noul', instructions: 'Return 1 if the description supports the stated rental price, otherwise 0.' }
           }

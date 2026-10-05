@@ -2,16 +2,18 @@
 
 A Cloudflare Workers application that samples public Tehran rental listings on Divar.ir, extracts structured rental details with Workers AI, and flags unusually low or potentially misleading prices. The admin dashboard and API are rendered/served by the Worker; the database is Cloudflare D1.
 
-The project does not use Divar's official API, browser automation, or npm dependencies at runtime. Scraping uses the same unauthenticated JSON search endpoint used by Divar's web client, with a two-second pause between district requests. The endpoint and district IDs are internal and may change without notice.
+The project does not use Divar's official listing API, browser automation, or npm dependencies at runtime. District metadata is discovered from the Kenar district endpoint when available, with listing-search discovery as a fallback. Scraping uses Divar's JSON search endpoint with a three-second pause between districts. These endpoints and their response formats may change without notice.
 
 ## Features
 
 - Persian, RTL dashboard with district charts, listing filters, request logs, and editable analysis settings.
+- Automatic Tehran district discovery, weekly refresh, and slug-based dashboard/listing links.
 - Durable Cloudflare Workflow for district-based sampling, extraction, evaluation, and log cleanup.
-- At most two new listings per district in a workflow run, and a hard maximum of 30 Workers AI calls per UTC day.
+- Up to five new listings per district per run, and a configurable maximum of 100 Workers AI calls per UTC day.
+- Rental comparisons use deposit-equivalent value: deposit plus monthly rent multiplied by 30. This is a modeling assumption based on a common market convention, not a fixed legal rate; actual conversion terms vary by listing and location.
 - Workers AI extraction with a 24-hour quota lock after an allocation error.
 - Optional TypeSafe Jev evaluation using `TYPESAFE_API_KEY`, with a local heuristic when no key is configured or the service is unavailable.
-- D1 schema and seed data for all 22 Tehran districts and 110 main-neighborhood entries.
+- D1 district records are populated from discovery; the seed file intentionally contains no manual districts.
 
 ## Prerequisites
 
@@ -61,15 +63,19 @@ npm run deploy
 
 The TypeSafe secret is optional. Do not place it in `wrangler.jsonc`, source files, or version control. Workers AI is configured as a binding and requires no API key. Configure GitHub-to-Cloudflare deployment in the Cloudflare dashboard if you want pushes to deploy automatically.
 
-The cron trigger starts a workflow every six hours. Manual runs are available from the dashboard. Workflow scraping and AI work are bounded by the configured limits; editing `daily_listing_limit` cannot raise the AI limit above 30 per UTC day.
+For an existing database created with the earlier schema, run `npm run db:migrate` once to add district slug metadata, then run `npm run db:migrate-pricing` once to add deposit-equivalent values and increase default sampling settings. Existing listings are backfilled with the 30:1 conversion assumption. Use the matching `-local` commands for local D1. If the Kenar endpoint requires authentication, set `KENAR_API_KEY` with `npx wrangler secret put KENAR_API_KEY`; the search API fallback requires no key.
+
+The cron trigger starts a workflow every six hours. District discovery refreshes weekly, and up to ten districts not scraped in the last 12 hours are selected per run. Manual runs are available from the dashboard. Workflow scraping and AI work are bounded by the configured limits; the dashboard allows up to 100 listings per UTC day and five listings per district per run. For convertible listings, extraction prefers the option with the highest deposit when the listing explicitly permits changing the deposit/rent split.
 
 ## Database Commands
 
 - `npm run db:init-local` / `npm run db:seed-local`: initialize local D1.
 - `npm run db:init` / `npm run db:seed`: initialize remote D1.
+- `npm run db:migrate-local` / `npm run db:migrate`: migrate an older database to discovered district slugs; run once.
+- `npm run db:migrate-pricing-local` / `npm run db:migrate-pricing`: add deposit-equivalent pricing and update default sampling limits; run once after the district migration.
 - `npm run db:console`: run the example read-only listing query against remote D1.
 
-Run schema initialization before seeding. The SQL uses `IF NOT EXISTS` and `INSERT OR IGNORE`, so initialization and seeding can be repeated.
+For a new database, run schema initialization and seeding. The seed contains only a no-op statement; the `/api/discover-districts` endpoint and workflow populate districts automatically. Existing databases need the one-time migration instead of rerunning initialization.
 
 ## API
 
@@ -78,7 +84,8 @@ Run schema initialization before seeding. The SQL uses `IF NOT EXISTS` and `INSE
 - `GET /api/listings?district=1&fake_label=suspicious&page=1` — filtered, paginated listings. `fake_label` also accepts `real`, `fake`, `unknown`, and `pending`.
 - `GET /api/logs?service=scraper&limit=100` — request logs; optional `status=success` or `status=error`.
 - `GET /api/settings` and `POST /api/settings` — read and update analysis settings.
-- `GET /api/test-api` — test the Divar JSON search endpoint and return a response preview and sample tokens.
+- `GET /api/discover-districts` — discover district slugs/names, fall back from Kenar to search, and sync to D1.
+- `GET /api/test-api` — test an unfiltered Tehran search and return sample listings and a response preview.
 - `GET /api/force-run` — start a workflow.
 - `GET /api/retry/:id` and `POST /api/retry-all-failed` — retry failed extraction.
 - `GET /api/reset-listings` — delete listings while preserving district and neighborhood seed data.
@@ -87,13 +94,14 @@ Run schema initialization before seeding. The SQL uses `IF NOT EXISTS` and `INSE
 
 The dashboard intentionally has no authentication, as requested. Treat its deployed URL as private, do not expose it publicly, and understand that an unprotected URL is not access control. The reset endpoint is destructive and is also unauthenticated.
 
-Divar may block automated requests or change its internal JSON endpoint at any time. HTTP and parsing errors are recorded in request logs. The current scraper uses Divar district ID `992` for testing; district-to-database mappings must be established before expanding the district list. Confirm the site's applicable terms and local requirements before operating a scraper, and monitor request logs and Cloudflare usage. No listing data is guaranteed accurate; fake-price labels are signals for review, not a definitive claim about an advertiser.
+Divar may block automated requests or change its internal JSON/Kenar endpoints at any time. HTTP and parsing errors are recorded in request logs. Search-based district fallback derives slugs from returned location data when the response does not include a slug, so verify newly discovered results before relying on them. Confirm the site's applicable terms and local requirements before operating a scraper, and monitor request logs and Cloudflare usage. No listing data is guaranteed accurate; fake-price labels are signals for review, not a definitive claim about an advertiser.
 
 ## Project Structure
 
 ```text
-src/                 Worker, workflow, scraper, extraction, and scoring modules
-seed/                District and neighborhood SQL seed
+src/                 Worker, workflow, discovery, scraper, extraction, and scoring modules
+seed/                Empty district seed (discovery populates D1)
+migrations/          One-time migration for existing D1 databases
 schema.sql           D1 tables, indexes, and default settings
 wrangler.jsonc       Worker, D1, AI, Workflow, and cron configuration
 ```

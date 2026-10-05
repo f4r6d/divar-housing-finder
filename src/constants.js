@@ -1,0 +1,3 @@
+export const DAILY_LISTING_LIMIT_MAX = 100;
+export const LISTINGS_PER_DISTRICT_MAX = 5;
+export const DISTRICTS_PER_RUN = 10;

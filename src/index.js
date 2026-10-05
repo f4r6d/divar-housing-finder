@@ -1,11 +1,13 @@
 import { DivarScrapeWorkflow } from './workflow.js';
-import { extractTokensFromApiResponse, fetchListingsPage } from './scraper.js';
+import { extractListingsFromApiResponse, fetchListingsPage } from './scraper.js';
+import { discoverDistrictsFromKenar, discoverDistrictsFromSearch, syncDistrictsToDb } from './district-discovery.js';
 import { escHtml, getSettings, json, logError } from './utils.js';
+import { DAILY_LISTING_LIMIT_MAX, LISTINGS_PER_DISTRICT_MAX } from './constants.js';
 
 export { DivarScrapeWorkflow };
 
 const LABELS = new Set(['real', 'suspicious', 'fake', 'unknown']);
-const SERVICES = new Set(['scraper', 'scraper-discovery', 'workers-ai', 'jev', 'system', 'willhaben']);
+const SERVICES = new Set(['scraper', 'district-discovery', 'workers-ai', 'jev', 'system', 'willhaben']);
 
 function html(body, status = 200) {
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
@@ -34,21 +36,13 @@ async function apiRoute(request, env, url) {
 
   if (path === '/api/districts' && request.method === 'GET') {
     const result = await env.DB.prepare(`
-      SELECT d.id, d.name_fa, d.name_en, COALESCE(l.count, 0) AS count,
-        l.avg_price, COALESCE(l.fake_percent, 0) AS fake_percent, s.last_scrape
+      SELECT d.slug AS id, d.slug, d.name_fa, COALESCE(COUNT(l.id), 0) AS count,
+        AVG(CASE WHEN l.deposit_equivalent_toman > 0 THEN l.deposit_equivalent_toman END) AS avg_price,
+        COALESCE(100.0 * SUM(CASE WHEN l.fake_label = 'fake' THEN 1 ELSE 0 END) / NULLIF(COUNT(l.id), 0), 0) AS fake_percent,
+        d.last_scraped_at AS last_scrape
       FROM districts d
-      LEFT JOIN (
-        SELECT district_id, COUNT(*) AS count,
-          AVG(CASE WHEN price_toman > 0 THEN price_toman END) AS avg_price,
-          100.0 * SUM(CASE WHEN fake_label = 'fake' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) AS fake_percent
-        FROM listings GROUP BY district_id
-      ) l ON l.district_id = d.id
-      LEFT JOIN (
-        SELECT n.district_id, MAX(s.last_scraped_at) AS last_scrape
-        FROM neighborhoods n LEFT JOIN scrape_state s ON s.neighborhood_id = n.id
-        GROUP BY n.district_id
-      ) s ON s.district_id = d.id
-      ORDER BY d.id
+      LEFT JOIN listings l ON l.district_slug = d.slug
+      GROUP BY d.slug ORDER BY d.name_fa
     `).all();
     return json(result.results || []);
   }
@@ -58,19 +52,20 @@ async function apiRoute(request, env, url) {
     const pageSize = 20;
     const clauses = [];
     const values = [];
-    const district = Number.parseInt(url.searchParams.get('district') || '', 10);
+    const district = url.searchParams.get('district') || '';
     const label = url.searchParams.get('fake_label');
-    if (Number.isInteger(district) && district > 0 && district <= 22) { clauses.push('l.district_id = ?'); values.push(district); }
+    if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(district)) { clauses.push('l.district_slug = ?'); values.push(district); }
     if (label === 'pending') clauses.push('l.extraction_done = 0');
     else if (LABELS.has(label)) { clauses.push('l.fake_label = ?'); values.push(label); }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const count = await env.DB.prepare(`SELECT COUNT(*) AS total FROM listings l ${where}`).bind(...values).first();
     const result = await env.DB.prepare(`
       SELECT l.id, l.divar_token, l.url, l.title, l.price_toman, l.rent_toman, l.deposit_toman,
+        l.deposit_equivalent_toman, l.rent_deposit_flexible,
         l.size_m2, l.rooms, l.image_url, l.fake_label, l.fake_score, l.fake_reason,
-        l.extraction_done, l.district_id, d.name_fa AS district_name, n.name_fa AS neighborhood_name,
+        l.extraction_done, l.district_id, l.district_slug, d.name_fa AS district_name, n.name_fa AS neighborhood_name,
         l.scraped_at
-      FROM listings l LEFT JOIN districts d ON d.id = l.district_id
+      FROM listings l LEFT JOIN districts d ON d.slug = l.district_slug
       LEFT JOIN neighborhoods n ON n.id = l.neighborhood_id
       ${where} ORDER BY l.scraped_at DESC LIMIT ? OFFSET ?
     `).bind(...values, pageSize, (page - 1) * pageSize).all();
@@ -91,17 +86,34 @@ async function apiRoute(request, env, url) {
     return json(result.results || []);
   }
 
+  if (path === '/api/discover-districts' && request.method === 'GET') {
+    let districts = await discoverDistrictsFromKenar(env);
+    let source = 'kenar';
+    if (districts === null) {
+      districts = await discoverDistrictsFromSearch(env);
+      source = 'search';
+    }
+    const count = await syncDistrictsToDb(env, districts || []);
+    if (districts?.length) {
+      await env.DB.prepare(`
+        INSERT INTO system_state (key, value, updated_at) VALUES ('district_discovery_last_run', datetime('now'), datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+      `).run();
+    }
+    return json({ success: Boolean(districts?.length), source, count, districts: districts || [] }, districts?.length ? 200 : 502);
+  }
+
   if (path === '/api/test-api' && request.method === 'GET') {
     const metadata = {};
-    const response = await fetchListingsPage(env, '1', 'residential-rent', 1, ['992'], metadata);
-    const listings = extractTokensFromApiResponse(response);
+    const response = await fetchListingsPage(env, '1', 'residential-rent', 1, [], metadata);
+    const listings = extractListingsFromApiResponse(response);
     if (!response) {
       return json({
         success: false,
         httpStatus: metadata.httpStatus || 0,
         listingsCount: 0,
-        sampleTokens: [],
-        rawResponse: String(metadata.rawResponse || '').slice(0, 500),
+        sampleListings: [],
+        rawResponseSnippet: String(metadata.rawResponse || '').slice(0, 500),
         error: metadata.error || 'The Divar API request failed.'
       }, metadata.httpStatus >= 400 && metadata.httpStatus < 600 ? metadata.httpStatus : 502);
     }
@@ -109,8 +121,8 @@ async function apiRoute(request, env, url) {
       success: true,
       httpStatus: metadata.httpStatus,
       listingsCount: listings.length,
-      sampleTokens: listings.slice(0, 5).map((listing) => listing.token),
-      rawResponse: String(metadata.rawResponse || '').slice(0, 500)
+      sampleListings: listings.slice(0, 5),
+      rawResponseSnippet: String(metadata.rawResponse || '').slice(0, 500)
     });
   }
 
@@ -143,8 +155,8 @@ async function apiRoute(request, env, url) {
     const dailyLimit = Number(input.daily_listing_limit);
     const hoodLimit = Number(input.max_listings_per_hood);
     if (![fakeThreshold, highThreshold].every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ||
-        highThreshold < fakeThreshold || !Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 30 ||
-        !Number.isInteger(hoodLimit) || hoodLimit < 1 || hoodLimit > 2) {
+        highThreshold < fakeThreshold || !Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > DAILY_LISTING_LIMIT_MAX ||
+        !Number.isInteger(hoodLimit) || hoodLimit < 1 || hoodLimit > LISTINGS_PER_DISTRICT_MAX) {
       return json({ error: 'مقادیر تنظیمات معتبر نیستند.' }, 400);
     }
     const baitKeywords = Array.isArray(input.bait_keywords) ? input.bait_keywords : String(input.bait_keywords || '').split(/\r?\n/);
@@ -276,10 +288,18 @@ export async function serveUI(env) {
   try { weights = JSON.parse(settings.jev_weights || '{}'); } catch { /* Use defaults below. */ }
   try { baitKeywords = JSON.parse(settings.bait_keywords || '[]'); } catch { /* Use an empty list. */ }
   const rendered = DASHBOARD_HTML
+    .replace('max="30" step="1" required', `max="${DAILY_LISTING_LIMIT_MAX}" step="1" required`)
+    .replace('max="2" step="1" required', `max="${LISTINGS_PER_DISTRICT_MAX}" step="1" required`)
+    .replace('حد آگهی از هر محله در هر اجرا', 'حد آگهی از هر منطقه در هر اجرا')
+    .replace('data.daily_listing_limit??30', 'data.daily_listing_limit??100')
+    .replace('data.max_listings_per_hood??2', 'data.max_listings_per_hood??5')
+    .replace('const price=item.rent_toman||item.price_toman;', 'const price=item.deposit_equivalent_toman||item.rent_toman||item.price_toman;')
+    .replace("paragraph.textContent=price?currency.format(price)+' تومان':'قیمت نامشخص';", "paragraph.textContent=price?'معادل ودیعه '+currency.format(price)+' تومان':'قیمت نامشخص';")
+    .replace('meta.appendChild(paragraph);', "meta.appendChild(paragraph);const terms=document.createElement('p');terms.textContent=[item.deposit_toman?'ودیعه '+currency.format(item.deposit_toman):'',item.rent_toman?'اجاره ماهانه '+currency.format(item.rent_toman):'',item.rent_deposit_flexible?'بیشترین ودیعه در حالت تبدیل':''].filter(Boolean).join(' · ');if(terms.textContent)meta.appendChild(terms);")
     .replace(/(<input id="fake-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.fake_threshold || '0.6')}"${suffix}`)
     .replace(/(<input id="high-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.high_fake_threshold || '0.8')}"${suffix}`)
-    .replace(/(<input id="daily-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.daily_listing_limit || '30')}"${suffix}`)
-    .replace(/(<input id="hood-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.max_listings_per_hood || '2')}"${suffix}`)
+    .replace(/(<input id="daily-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.daily_listing_limit || '100')}"${suffix}`)
+    .replace(/(<input id="hood-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.max_listings_per_hood || '5')}"${suffix}`)
     .replace(/(<textarea id="bait-keywords"[^>]*>)[\s\S]*?(<\/textarea>)/, (_, prefix, suffix) => `${prefix}${escHtml(Array.isArray(baitKeywords) ? baitKeywords.join('\n') : '')}${suffix}`)
     .replace(/(<input id="weight-district"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.price_vs_district_avg ?? '0.4')}"${suffix}`)
     .replace(/(<input id="weight-sqm"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(weights.price_vs_size_ratio ?? '0.25')}"${suffix}`)

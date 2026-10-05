@@ -1,10 +1,13 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS districts (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug TEXT UNIQUE NOT NULL,
   name_fa TEXT NOT NULL,
-  name_en TEXT,
-  slug TEXT UNIQUE
+  city_slug TEXT DEFAULT 'tehran',
+  last_scraped_at TEXT,
+  listings_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS neighborhoods (
@@ -24,10 +27,13 @@ CREATE TABLE IF NOT EXISTS listings (
   price_toman INTEGER,
   rent_toman INTEGER,
   deposit_toman INTEGER,
+  deposit_equivalent_toman INTEGER,
+  rent_deposit_flexible INTEGER NOT NULL DEFAULT 0,
   size_m2 REAL,
   rooms INTEGER,
   neighborhood_id INTEGER,
   district_id INTEGER,
+  district_slug TEXT,
   description TEXT,
   image_url TEXT,
   extracted_data TEXT,
@@ -45,6 +51,7 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_listings_district_id ON listings(district_id);
+CREATE INDEX IF NOT EXISTS idx_listings_district_slug ON listings(district_slug);
 CREATE INDEX IF NOT EXISTS idx_listings_neighborhood_id ON listings(neighborhood_id);
 CREATE INDEX IF NOT EXISTS idx_listings_extraction_done ON listings(extraction_done);
 CREATE INDEX IF NOT EXISTS idx_listings_jev_done ON listings(jev_done);
@@ -68,8 +75,8 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('fake_threshold', '0.6'),
   ('high_fake_threshold', '0.8'),
-  ('daily_listing_limit', '30'),
-  ('max_listings_per_hood', '2'),
+  ('daily_listing_limit', '100'),
+  ('max_listings_per_hood', '5'),
   ('jev_weights', '{"price_vs_district_avg":0.40,"price_vs_size_ratio":0.25,"description_mismatch":0.20,"suspicious_keywords":0.15}'),
   ('bait_keywords', '["قیمت توافقی","زیر قیمت","فوری","فرصت استثنایی","فقط امروز"]');
 
