@@ -1,4 +1,5 @@
 import { extractListingsFromApiResponse, fetchListingsPage } from './scraper.js';
+import { regionForNeighborhood } from './tehran-region-map.js';
 import { logError, logSuccess } from './utils.js';
 
 const KENAR_URL = 'https://open-api.divar.ir/v1/open-platform/assets/district/tehran';
@@ -56,13 +57,41 @@ export async function discoverDistrictsFromSearch(env) {
 export async function syncDistrictsToDb(env, districts) {
   const unique = normalizeDistricts(districts);
   const statements = unique.map((district) => env.DB.prepare(`
-      INSERT OR IGNORE INTO districts (slug, name_fa, city_slug, created_at)
-      VALUES (?, ?, 'tehran', datetime('now'))
-    `).bind(district.slug, district.name_fa));
+      INSERT INTO districts (slug, name_fa, city_slug, region_id, created_at)
+      VALUES (?, ?, 'tehran', ?, datetime('now'))
+      ON CONFLICT(slug) DO UPDATE SET name_fa = excluded.name_fa,
+        region_id = COALESCE(excluded.region_id, districts.region_id)
+    `).bind(district.slug, district.name_fa, regionForNeighborhood(district.name_fa, district.slug)));
   let added = 0;
   for (let offset = 0; offset < statements.length; offset += 100) {
     const results = await env.DB.batch(statements.slice(offset, offset + 100));
     added += results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
   }
   return added;
+}
+
+export async function backfillRegionAssignments(env) {
+  const marker = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'district_region_backfill_v1'").first();
+  if (marker?.value === 'done') return;
+
+  const result = await env.DB.prepare('SELECT id, slug, name_fa FROM districts WHERE region_id IS NULL').all();
+  const updates = (result.results || []).flatMap((district) => {
+    const regionId = regionForNeighborhood(district.name_fa, district.slug);
+    return regionId ? [env.DB.prepare('UPDATE districts SET region_id = ? WHERE id = ?').bind(regionId, district.id)] : [];
+  });
+  for (let offset = 0; offset < updates.length; offset += 100) {
+    await env.DB.batch(updates.slice(offset, offset + 100));
+  }
+  await env.DB.prepare(`
+    UPDATE listings SET region_id = (
+      SELECT region_id FROM districts WHERE districts.slug = listings.district_slug
+    )
+    WHERE region_id IS NULL AND EXISTS (
+      SELECT 1 FROM districts WHERE districts.slug = listings.district_slug AND region_id IS NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    INSERT INTO system_state (key, value, updated_at) VALUES ('district_region_backfill_v1', 'done', datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = 'done', updated_at = datetime('now')
+  `).run();
 }

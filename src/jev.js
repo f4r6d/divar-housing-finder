@@ -33,8 +33,10 @@ async function getDistrictStats(env, listing, supplied) {
         SELECT AVG(COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman)) AS avg_price,
           AVG(CASE WHEN size_m2 > 0 THEN COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman) / size_m2 END) AS avg_price_per_sqm
     FROM listings
-        WHERE district_id = ? AND extraction_done = 1 AND COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman) > 0
-  `).bind(listing.district_id).first();
+        WHERE ((? IS NOT NULL AND region_id = ?) OR (? IS NULL AND district_id = ?))
+          AND extraction_done = 1
+          AND COALESCE(NULLIF(deposit_equivalent_toman, 0), deposit_toman + COALESCE(rent_toman, 0) * 30, price_toman) > 0
+      `).bind(listing.region_id ?? null, listing.region_id ?? null, listing.region_id ?? null, listing.district_id).first();
   return row || {};
 }
 

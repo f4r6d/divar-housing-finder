@@ -2,7 +2,7 @@ import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { extractListingData } from './extractor.js';
 import { evaluateListing } from './jev.js';
 import { extractListingsFromApiResponse, fetchListingsPage } from './scraper.js';
-import { discoverDistrictsFromKenar, discoverDistrictsFromSearch, syncDistrictsToDb } from './district-discovery.js';
+import { backfillRegionAssignments, discoverDistrictsFromKenar, discoverDistrictsFromSearch, syncDistrictsToDb } from './district-discovery.js';
 import { getSettings, isAiQuotaExhausted, logError, logSuccess } from './utils.js';
 import { DAILY_LISTING_LIMIT_MAX, DISTRICTS_PER_RUN, LISTINGS_PER_DISTRICT_MAX } from './constants.js';
 import { depositEquivalentToman } from './rental-pricing.js';
@@ -46,10 +46,10 @@ async function scrapeDistrict(env, district, dailyRemaining, maxPerDistrict) {
   for (const listing of newListings) {
     const write = await env.DB.prepare(`
       INSERT OR IGNORE INTO listings
-        (divar_token, url, title, description, image_url, district_id, district_slug, extraction_done)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        (divar_token, url, title, description, image_url, district_id, district_slug, region_id, extraction_done)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).bind(listing.token, `https://divar.ir/v/${encodeURIComponent(listing.token)}`,
-      listing.title, listing.description, listing.image_url, district.id, district.slug).run();
+      listing.title, listing.description, listing.image_url, district.id, district.slug, district.region_id).run();
     if (Number(write.meta?.changes || 0) > 0) inserted += 1;
   }
   await env.DB.prepare(`
@@ -114,6 +114,7 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const payload = event.payload || {};
     await step.do('sync-districts', async () => {
+      await backfillRegionAssignments(this.env);
       const lastRun = await this.env.DB.prepare("SELECT value FROM system_state WHERE key = 'district_discovery_last_run'").first();
       if (lastRun?.value && Date.parse(lastRun.value) > Date.now() - 7 * 24 * 60 * 60 * 1000) {
         return { source: 'cached', count: 0 };
@@ -146,7 +147,7 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
         return { settings: await getSettings(this.env), districts: [], retry: true };
       }
       const districts = await this.env.DB.prepare(`
-        SELECT id, slug, name_fa FROM districts
+        SELECT id, slug, name_fa, region_id FROM districts
         WHERE city_slug = 'tehran' AND (last_scraped_at IS NULL OR last_scraped_at < datetime('now', '-12 hours'))
         ORDER BY last_scraped_at ASC LIMIT ${DISTRICTS_PER_RUN}
       `).all();

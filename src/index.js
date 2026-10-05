@@ -1,6 +1,6 @@
 import { DivarScrapeWorkflow } from './workflow.js';
 import { extractListingsFromApiResponse, fetchListingsPage } from './scraper.js';
-import { discoverDistrictsFromKenar, discoverDistrictsFromSearch, syncDistrictsToDb } from './district-discovery.js';
+import { backfillRegionAssignments, discoverDistrictsFromKenar, discoverDistrictsFromSearch, syncDistrictsToDb } from './district-discovery.js';
 import { escHtml, getSettings, json, logError } from './utils.js';
 import { DAILY_LISTING_LIMIT_MAX, LISTINGS_PER_DISTRICT_MAX } from './constants.js';
 
@@ -35,15 +35,44 @@ async function apiRoute(request, env, url) {
   }
 
   if (path === '/api/districts' && request.method === 'GET') {
+    await backfillRegionAssignments(env);
     const result = await env.DB.prepare(`
-      SELECT d.slug AS id, d.slug, d.name_fa, COALESCE(COUNT(l.id), 0) AS count,
-        AVG(CASE WHEN l.deposit_equivalent_toman > 0 THEN l.deposit_equivalent_toman END) AS avg_price,
-        COALESCE(100.0 * SUM(CASE WHEN l.fake_label = 'fake' THEN 1 ELSE 0 END) / NULLIF(COUNT(l.id), 0), 0) AS fake_percent,
-        d.last_scraped_at AS last_scrape
-      FROM districts d
-      LEFT JOIN listings l ON l.district_slug = d.slug
-      GROUP BY d.slug ORDER BY d.name_fa
+      SELECT r.id, r.slug, r.name_fa,
+        (SELECT COUNT(*) FROM listings l WHERE l.region_id = r.id) AS count,
+        (SELECT AVG(l.deposit_equivalent_toman) FROM listings l WHERE l.region_id = r.id AND l.deposit_equivalent_toman > 0) AS avg_price,
+        COALESCE(100.0 * (SELECT COUNT(*) FROM listings l WHERE l.region_id = r.id AND l.fake_label = 'fake') / NULLIF((SELECT COUNT(*) FROM listings l WHERE l.region_id = r.id), 0), 0) AS fake_percent,
+        (SELECT MAX(p.last_scraped_at) FROM districts p WHERE p.region_id = r.id) AS last_scrape,
+        (SELECT COUNT(*) FROM districts p WHERE p.region_id = r.id) AS neighborhood_count
+      FROM regions r ORDER BY r.id
     `).all();
+    return json(result.results || []);
+  }
+
+  if (path === '/api/unmapped-neighborhoods' && request.method === 'GET') {
+    const result = await env.DB.prepare(`
+      SELECT p.slug, p.name_fa, COUNT(l.id) AS listing_count
+      FROM districts p LEFT JOIN listings l ON l.district_slug = p.slug
+      WHERE p.region_id IS NULL GROUP BY p.id ORDER BY listing_count DESC, p.name_fa
+    `).all();
+    const neighborhoods = result.results || [];
+    return json({
+      neighborhoods,
+      listing_count: neighborhoods.reduce((sum, item) => sum + Number(item.listing_count || 0), 0)
+    });
+  }
+
+  const neighborhoodsMatch = path.match(/^\/api\/districts\/(tehran-region-\d+)\/neighborhoods$/);
+  if (neighborhoodsMatch && request.method === 'GET') {
+    const region = await env.DB.prepare('SELECT id FROM regions WHERE slug = ?').bind(neighborhoodsMatch[1]).first();
+    if (!region) return json({ error: 'منطقه پیدا نشد.' }, 404);
+    const result = await env.DB.prepare(`
+      SELECT p.id, p.slug, p.name_fa, p.last_scraped_at AS last_scrape,
+        COUNT(l.id) AS count,
+        AVG(CASE WHEN l.deposit_equivalent_toman > 0 THEN l.deposit_equivalent_toman END) AS avg_price,
+        COALESCE(100.0 * SUM(CASE WHEN l.fake_label = 'fake' THEN 1 ELSE 0 END) / NULLIF(COUNT(l.id), 0), 0) AS fake_percent
+      FROM districts p LEFT JOIN listings l ON l.district_slug = p.slug
+      WHERE p.region_id = ? GROUP BY p.id ORDER BY p.name_fa
+    `).bind(region.id).all();
     return json(result.results || []);
   }
 
@@ -53,8 +82,10 @@ async function apiRoute(request, env, url) {
     const clauses = [];
     const values = [];
     const district = url.searchParams.get('district') || '';
+    const neighborhood = url.searchParams.get('neighborhood') || '';
     const label = url.searchParams.get('fake_label');
-    if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(district)) { clauses.push('l.district_slug = ?'); values.push(district); }
+    if (/^tehran-region-\d+$/.test(district)) { clauses.push('l.region_id = (SELECT id FROM regions WHERE slug = ?)'); values.push(district); }
+    if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(neighborhood)) { clauses.push('l.district_slug = ?'); values.push(neighborhood); }
     if (label === 'pending') clauses.push('l.extraction_done = 0');
     else if (LABELS.has(label)) { clauses.push('l.fake_label = ?'); values.push(label); }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
@@ -63,10 +94,10 @@ async function apiRoute(request, env, url) {
       SELECT l.id, l.divar_token, l.url, l.title, l.price_toman, l.rent_toman, l.deposit_toman,
         l.deposit_equivalent_toman, l.rent_deposit_flexible,
         l.size_m2, l.rooms, l.image_url, l.fake_label, l.fake_score, l.fake_reason,
-        l.extraction_done, l.district_id, l.district_slug, d.name_fa AS district_name, n.name_fa AS neighborhood_name,
+        l.extraction_done, l.district_id, l.district_slug, r.name_fa AS district_name, n.name_fa AS neighborhood_name,
         l.scraped_at
-      FROM listings l LEFT JOIN districts d ON d.slug = l.district_slug
-      LEFT JOIN neighborhoods n ON n.id = l.neighborhood_id
+      FROM listings l LEFT JOIN regions r ON r.id = l.region_id
+      LEFT JOIN districts n ON n.slug = l.district_slug
       ${where} ORDER BY l.scraped_at DESC LIMIT ? OFFSET ?
     `).bind(...values, pageSize, (page - 1) * pageSize).all();
     return json({ listings: result.results || [], page, page_size: pageSize, total: Number(count?.total || 0), pages: Math.ceil(Number(count?.total || 0) / pageSize) });
@@ -94,6 +125,7 @@ async function apiRoute(request, env, url) {
       source = 'search';
     }
     const count = await syncDistrictsToDb(env, districts || []);
+    await backfillRegionAssignments(env);
     if (districts?.length) {
       await env.DB.prepare(`
         INSERT INTO system_state (key, value, updated_at) VALUES ('district_discovery_last_run', datetime('now'), datetime('now'))
@@ -288,6 +320,16 @@ export async function serveUI(env) {
   try { weights = JSON.parse(settings.jev_weights || '{}'); } catch { /* Use defaults below. */ }
   try { baitKeywords = JSON.parse(settings.bait_keywords || '[]'); } catch { /* Use an empty list. */ }
   const rendered = DASHBOARD_HTML
+    .replace('</style>', '.neighborhood-row td{background:#f7f9fc}.neighborhood-row .data-table{margin:0;background:#fff}details.map-review{margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--paper)}.map-review summary{cursor:pointer;font-weight:700}.map-review table{margin-top:8px}</style>')
+    .replace('<tbody id="district-rows"></tbody></table></div></section>', '<tbody id="district-rows"></tbody></table></div><details class="map-review" id="unmapped-panel"><summary id="unmapped-summary">مکان‌های نیازمند تطبیق</summary><div id="unmapped-list"></div></details></section>')
+    .replace("const state={page:1,label:'all',district:'',charts:{}};", "const state={page:1,label:'all',district:'',neighborhood:'',charts:{}};")
+    .replace('async function loadDistricts(){', `async function toggleRegionRow(row,region){const current=row.nextElementSibling;if(current&&current.classList.contains('neighborhood-row')){current.remove();row.setAttribute('aria-expanded','false');return;}document.querySelectorAll('.neighborhood-row').forEach(function(item){item.remove();});document.querySelectorAll('[aria-expanded="true"]').forEach(function(item){item.setAttribute('aria-expanded','false');});const detail=document.createElement('tr');detail.className='neighborhood-row';const cell=document.createElement('td');cell.colSpan=5;cell.textContent='در حال دریافت محله‌ها…';detail.appendChild(cell);row.after(detail);row.setAttribute('aria-expanded','true');try{const neighborhoods=await api('/api/districts/'+encodeURIComponent(region.slug)+'/neighborhoods');const table=document.createElement('table');table.className='data-table';table.innerHTML='<thead><tr><th>محله</th><th>آگهی</th><th>میانگین معادل ودیعه</th><th>درصد فیک</th><th>آخرین بررسی</th></tr></thead>';const body=document.createElement('tbody');neighborhoods.forEach(function(item){const tr=document.createElement('tr');[item.name_fa,faNumber.format(item.count||0),item.avg_price?currency.format(Math.round(item.avg_price))+' تومان':'—',faNumber.format(Math.round(item.fake_percent||0))+'٪',formatLocalTime(item.last_scrape)].forEach(function(value){const td=document.createElement('td');td.textContent=value;tr.appendChild(td);});tr.title='نمایش آگهی‌های این محله';tr.addEventListener('click',function(){state.district=region.slug;state.neighborhood=item.slug;state.page=1;document.getElementById('district-filter').value=region.slug;switchTab('listings');});body.appendChild(tr);});table.appendChild(body);cell.replaceChildren(table);if(!neighborhoods.length)cell.textContent='هنوز محله‌ای با منطقه معتبر ثبت نشده است.';}catch(error){cell.textContent=error.message;}}
+    async function loadUnmapped(){const report=await api('/api/unmapped-neighborhoods');document.getElementById('unmapped-summary').textContent='محله‌های بدون منطقه معتبر · '+faNumber.format(report.neighborhoods.length)+' محله · '+faNumber.format(report.listing_count)+' آگهی';const target=document.getElementById('unmapped-list');target.replaceChildren();const table=document.createElement('table');table.className='data-table';table.innerHTML='<thead><tr><th>محله در دیوار</th><th>آگهی</th></tr></thead>';const body=document.createElement('tbody');report.neighborhoods.forEach(function(item){const row=document.createElement('tr');const name=document.createElement('td');name.textContent=item.name_fa;const count=document.createElement('td');count.textContent=faNumber.format(item.listing_count||0);row.append(name,count);row.addEventListener('click',function(){state.neighborhood=item.slug;state.district='';state.page=1;switchTab('listings');});body.appendChild(row);});table.appendChild(body);target.appendChild(table);}
+    async function loadDistricts(){`)
+    .replace("tr.addEventListener('click',function(){state.district=String(d.id);dropdown.value=state.district;switchTab('listings');loadListings();});", "tr.setAttribute('aria-expanded','false');tr.addEventListener('click',function(){toggleRegionRow(tr,d);});")
+    .replace("if(window.Chart){const labels=rows.map", "loadUnmapped().catch(function(error){console.error(error);});if(window.Chart){const labels=rows.map")
+    .replace("if(state.district)params.set('district',state.district);if(state.label", "if(state.district)params.set('district',state.district);if(state.neighborhood)params.set('neighborhood',state.neighborhood);if(state.label")
+    .replace("state.district=event.target.value;state.page=1;loadListings();", "state.district=event.target.value;state.neighborhood='';state.page=1;loadListings();")
     .replace('max="30" step="1" required', `max="${DAILY_LISTING_LIMIT_MAX}" step="1" required`)
     .replace('max="2" step="1" required', `max="${LISTINGS_PER_DISTRICT_MAX}" step="1" required`)
     .replace('حد آگهی از هر محله در هر اجرا', 'حد آگهی از هر منطقه در هر اجرا')
