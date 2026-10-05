@@ -33,3 +33,21 @@ test('recovers one clearly mentioned neighborhood but rejects multiple places', 
   });
   assert.equal(neighborhoodFromText('هفت حوض و آبشار', neighborhoods), null);
 });
+
+test('does not match a neighborhood as a prefix of a different place name', () => {
+  const neighborhoods = [
+    { slug: 'darya', name_fa: 'دریا' },
+    { slug: 'lake', name_fa: 'دریاچه' }
+  ];
+  assert.deepEqual(neighborhoodFromText('دریاچه چیتگر', neighborhoods), {
+    slug: 'lake', region_id: 22, length: 6
+  });
+});
+
+test('recognizes the Divar Chitgar Lake alias as region 22', () => {
+  const neighborhood = { slug: 'chitgar-lake', name_fa: 'دریاچه شهدای خلیج فارس' };
+  assert.equal(regionForNeighborhood(neighborhood.name_fa, neighborhood.slug), 22);
+  assert.deepEqual(neighborhoodFromText('اجاره واحد کنار دریاچه چیتگر', [neighborhood]), {
+    slug: 'chitgar-lake', region_id: 22, length: 11
+  });
+});

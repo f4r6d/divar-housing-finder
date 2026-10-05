@@ -1109,13 +1109,24 @@ const NEIGHBORHOOD_REGIONS = {
 const REGION_OVERRIDES_BY_SLUG = {
   ajoodanieh: 1,
   arjantin: 6,
-  ahang: 14
+  ahang: 14,
+  'chitgar-lake': 22
+};
+
+const NEIGHBORHOOD_TEXT_ALIASES_BY_SLUG = {
+  'chitgar-lake': ['دریاچه چیتگر', 'دریاچه']
 };
 
 function normalizeNeighborhoodName(value) {
   return String(value || '').normalize('NFKC')
     .replace(/[يى]/g, 'ی').replace(/ك/g, 'ک')
     .replace(/[\u200c\s()،,.-]+/g, '').toLowerCase();
+}
+
+function neighborhoodWords(value) {
+  return String(value || '').normalize('NFKC')
+    .replace(/[يى]/g, 'ی').replace(/ك/g, 'ک')
+    .replace(/[\u200c\s()،,./\\|\-]+/g, ' ').trim().toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 const regionsByName = new Map();
@@ -1130,13 +1141,19 @@ export function regionForNeighborhood(name, slug) {
 }
 
 export function neighborhoodFromText(value, neighborhoods) {
-  const text = normalizeNeighborhoodName(value);
+  const text = neighborhoodWords(value);
   const matches = neighborhoods.flatMap((neighborhood) => {
-    const name = normalizeNeighborhoodName(neighborhood.name_fa);
+    const phrases = [neighborhood.name_fa, ...(NEIGHBORHOOD_TEXT_ALIASES_BY_SLUG[neighborhood.slug] || [])]
+      .map(neighborhoodWords);
     const regionId = regionForNeighborhood(neighborhood.name_fa, neighborhood.slug);
-    return name.length >= 4 && regionId && text.includes(name)
-      ? [{ slug: neighborhood.slug, region_id: regionId, length: name.length }]
-      : [];
+    return phrases.flatMap((words) => {
+      const nameLength = words.join('').length;
+      const found = words.length > 0 && text.some((_, start) =>
+        words.every((word, offset) => text[start + offset] === word));
+      return nameLength >= 4 && regionId && found
+        ? [{ slug: neighborhood.slug, region_id: regionId, length: nameLength }]
+        : [];
+    });
   });
   if (!matches.length) return null;
   if (new Set(matches.map((match) => match.region_id)).size > 1) return null;
