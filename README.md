@@ -63,7 +63,7 @@ npm run deploy
 
 The TypeSafe secret is optional. Do not place it in `wrangler.jsonc`, source files, or version control. Workers AI is configured as a binding and requires no API key. Configure GitHub-to-Cloudflare deployment in the Cloudflare dashboard if you want pushes to deploy automatically.
 
-For an existing database created with the earlier schema, run `npm run db:migrate` once to add district slug metadata, then run `npm run db:migrate-pricing` once to add deposit-equivalent values and increase default sampling settings. Existing listings are backfilled with the 30:1 conversion assumption. Use the matching `-local` commands for local D1. If the Kenar endpoint requires authentication, set `KENAR_API_KEY` with `npx wrangler secret put KENAR_API_KEY`; the search API fallback requires no key.
+For an existing database, inspect its columns before applying a migration: `districts.city_slug` and `listings.district_slug` mean the district migration is already applied; `listings.deposit_equivalent_toman` means the pricing migration is already applied. The project migration scripts execute SQL files directly and do not maintain Wrangler's `d1_migrations` history, so `wrangler d1 migrations list` can report already-applied migrations as pending. Do not rerun `0002_district_auto_discovery.sql` when its columns exist: it clears district/neighborhood records and unlinks listings. Apply only missing migrations. The pricing migration backfills existing listings using the 30:1 conversion assumption and updates the default sampling limits. Use the matching `-local` commands for local D1. If the Kenar endpoint requires authentication, set `KENAR_API_KEY` with `npx wrangler secret put KENAR_API_KEY`; the search API fallback requires no key.
 
 The cron trigger starts a workflow every six hours. District discovery refreshes weekly, and up to ten districts not scraped in the last 12 hours are selected per run. Manual runs are available from the dashboard. Workflow scraping and AI work are bounded by the configured limits; the dashboard allows up to 100 listings per UTC day and five listings per district per run. For convertible listings, extraction prefers the option with the highest deposit when the listing explicitly permits changing the deposit/rent split.
 
@@ -71,8 +71,8 @@ The cron trigger starts a workflow every six hours. District discovery refreshes
 
 - `npm run db:init-local` / `npm run db:seed-local`: initialize local D1.
 - `npm run db:init` / `npm run db:seed`: initialize remote D1.
-- `npm run db:migrate-local` / `npm run db:migrate`: migrate an older database to discovered district slugs; run once.
-- `npm run db:migrate-pricing-local` / `npm run db:migrate-pricing`: add deposit-equivalent pricing and update default sampling limits; run once after the district migration.
+- `npm run db:migrate-local` / `npm run db:migrate`: add district slug metadata to a database only when those columns are absent; this migration clears legacy district and neighborhood records.
+- `npm run db:migrate-pricing-local` / `npm run db:migrate-pricing`: add deposit-equivalent pricing and update default sampling limits only when the new pricing column is absent.
 - `npm run db:console`: run the example read-only listing query against remote D1.
 
 For a new database, run schema initialization and seeding. The seed contains only a no-op statement; the `/api/discover-districts` endpoint and workflow populate districts automatically. Existing databases need the one-time migration instead of rerunning initialization.
