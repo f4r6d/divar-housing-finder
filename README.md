@@ -85,7 +85,7 @@ For a new database, run schema initialization and seeding. The seed contains onl
 - `GET /api/stats` — overall listing counts.
 - `GET /api/districts` — counts, average prices, fake percentages, and latest neighborhood scrape times.
 - `GET /api/districts/:regionSlug/neighborhoods` — neighborhood-level reports within one Tehran municipal region.
-- `GET /api/unmapped-neighborhoods` — places that lack an unambiguous region mapping, with their listing counts.
+- `GET /api/unmapped-neighborhoods` — places that lack an unambiguous region mapping and the individual listings that still have no confirmed region.
 - `GET /api/listings?district=tehran-region-1&neighborhood=niavaran&fake_label=suspicious&page=1` — filtered, paginated listings. `fake_label` also accepts `real`, `fake`, `unknown`, and `pending`.
 - `GET /api/logs?service=scraper&limit=100` — request logs; optional `status=success` or `status=error`.
 - `GET /api/settings` and `POST /api/settings` — read and update analysis settings.

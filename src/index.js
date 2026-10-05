@@ -55,9 +55,17 @@ async function apiRoute(request, env, url) {
       WHERE p.region_id IS NULL GROUP BY p.id ORDER BY listing_count DESC, p.name_fa
     `).all();
     const neighborhoods = result.results || [];
+    const listingsResult = await env.DB.prepare(`
+      SELECT l.id, l.title, l.url, p.name_fa AS neighborhood_name
+      FROM listings l LEFT JOIN districts p ON p.slug = l.district_slug
+      WHERE l.region_id IS NULL ORDER BY l.scraped_at DESC
+    `).all();
+    const unassignedListings = listingsResult.results || [];
     return json({
       neighborhoods,
-      listing_count: neighborhoods.reduce((sum, item) => sum + Number(item.listing_count || 0), 0)
+      listing_count: neighborhoods.reduce((sum, item) => sum + Number(item.listing_count || 0), 0),
+      unassigned_listings: unassignedListings,
+      unassigned_listing_count: unassignedListings.length
     });
   }
 
@@ -338,6 +346,8 @@ export async function serveUI(env) {
     .replace('const price=item.rent_toman||item.price_toman;', 'const price=item.deposit_equivalent_toman||item.rent_toman||item.price_toman;')
     .replace("paragraph.textContent=price?currency.format(price)+' تومان':'قیمت نامشخص';", "paragraph.textContent=price?'معادل ودیعه '+currency.format(price)+' تومان':'قیمت نامشخص';")
     .replace('meta.appendChild(paragraph);', "meta.appendChild(paragraph);const terms=document.createElement('p');terms.textContent=[item.deposit_toman?'ودیعه '+currency.format(item.deposit_toman):'',item.rent_toman?'اجاره ماهانه '+currency.format(item.rent_toman):'',item.rent_deposit_flexible?'بیشترین ودیعه در حالت تبدیل':''].filter(Boolean).join(' · ');if(terms.textContent)meta.appendChild(terms);")
+    .replace("faNumber.format(report.listing_count)+' آگهی'", "faNumber.format(report.unassigned_listing_count)+' آگهی بدون منطقه'")
+    .replace('target.appendChild(table);}', "target.appendChild(table);if(report.unassigned_listings.length){const heading=document.createElement('h3');heading.textContent='آگهی‌های بدون منطقهٔ قطعی';target.appendChild(heading);const listingTable=document.createElement('table');listingTable.className='data-table';listingTable.innerHTML='<thead><tr><th>آگهی</th><th>محلهٔ شناخته‌شده</th><th>پیوند</th></tr></thead>';const listingBody=document.createElement('tbody');report.unassigned_listings.forEach(function(item){const row=document.createElement('tr');[item.title||'بدون عنوان',item.neighborhood_name||'نامشخص'].forEach(function(value){const cell=document.createElement('td');cell.textContent=value;row.appendChild(cell);});const linkCell=document.createElement('td');const link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='بازکردن';linkCell.appendChild(link);row.appendChild(linkCell);listingBody.appendChild(row);});listingTable.appendChild(listingBody);target.appendChild(listingTable);}}")
     .replace(/(<input id="fake-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.fake_threshold || '0.6')}"${suffix}`)
     .replace(/(<input id="high-threshold"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.high_fake_threshold || '0.8')}"${suffix}`)
     .replace(/(<input id="daily-limit"[^>]*)(>)/, (_, prefix, suffix) => `${prefix} value="${escHtml(settings.daily_listing_limit || '100')}"${suffix}`)
