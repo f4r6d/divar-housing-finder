@@ -1,5 +1,5 @@
 import { extractListingsFromApiResponse, fetchListingsPage } from './scraper.js';
-import { regionForNeighborhood } from './tehran-region-map.js';
+import { neighborhoodFromText, regionForNeighborhood } from './tehran-region-map.js';
 import { logError, logSuccess } from './utils.js';
 
 const KENAR_URL = 'https://open-api.divar.ir/v1/open-platform/assets/district/tehran';
@@ -71,7 +71,7 @@ export async function syncDistrictsToDb(env, districts) {
 }
 
 export async function backfillRegionAssignments(env) {
-  const marker = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'district_region_backfill_v1'").first();
+  const marker = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'district_region_backfill_v2'").first();
   if (marker?.value === 'done') return;
 
   const result = await env.DB.prepare('SELECT id, slug, name_fa FROM districts WHERE region_id IS NULL').all();
@@ -82,6 +82,17 @@ export async function backfillRegionAssignments(env) {
   for (let offset = 0; offset < updates.length; offset += 100) {
     await env.DB.batch(updates.slice(offset, offset + 100));
   }
+  const neighborhoods = await env.DB.prepare('SELECT slug, name_fa, region_id FROM districts WHERE region_id IS NOT NULL').all();
+  const listings = await env.DB.prepare('SELECT id, title, description FROM listings WHERE region_id IS NULL').all();
+  const listingUpdates = (listings.results || []).flatMap((listing) => {
+    const match = neighborhoodFromText(listing.title, neighborhoods.results || {}) ||
+      neighborhoodFromText(listing.description, neighborhoods.results || {});
+    return match ? [env.DB.prepare('UPDATE listings SET district_slug = ?, region_id = ? WHERE id = ?')
+      .bind(match.slug, match.region_id, listing.id)] : [];
+  });
+  for (let offset = 0; offset < listingUpdates.length; offset += 100) {
+    await env.DB.batch(listingUpdates.slice(offset, offset + 100));
+  }
   await env.DB.prepare(`
     UPDATE listings SET region_id = (
       SELECT region_id FROM districts WHERE districts.slug = listings.district_slug
@@ -91,7 +102,7 @@ export async function backfillRegionAssignments(env) {
     )
   `).run();
   await env.DB.prepare(`
-    INSERT INTO system_state (key, value, updated_at) VALUES ('district_region_backfill_v1', 'done', datetime('now'))
+    INSERT INTO system_state (key, value, updated_at) VALUES ('district_region_backfill_v2', 'done', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = 'done', updated_at = datetime('now')
   `).run();
 }

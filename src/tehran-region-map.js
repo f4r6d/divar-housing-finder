@@ -1128,3 +1128,19 @@ export function regionForNeighborhood(name, slug) {
   const regions = regionsByName.get(normalizeNeighborhoodName(name));
   return regions?.length === 1 ? regions[0] : null;
 }
+
+export function neighborhoodFromText(value, neighborhoods) {
+  const text = normalizeNeighborhoodName(value);
+  const matches = neighborhoods.flatMap((neighborhood) => {
+    const name = normalizeNeighborhoodName(neighborhood.name_fa);
+    const regionId = regionForNeighborhood(neighborhood.name_fa, neighborhood.slug);
+    return name.length >= 4 && regionId && text.includes(name)
+      ? [{ slug: neighborhood.slug, region_id: regionId, length: name.length }]
+      : [];
+  });
+  if (!matches.length) return null;
+  if (new Set(matches.map((match) => match.region_id)).size > 1) return null;
+  const longest = Math.max(...matches.map((match) => match.length));
+  const best = matches.filter((match) => match.length === longest);
+  return best.length === 1 ? best[0] : null;
+}
