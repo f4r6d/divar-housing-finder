@@ -2,7 +2,7 @@ import { DivarScrapeWorkflow } from './workflow.js';
 import { dashboardHtml } from './dashboard.js';
 import { refreshNeighborhoodsIfDue } from './neighborhood-discovery.js';
 import { getSettings, json, logError } from './utils.js';
-import { DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
+import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
 import { aiCallBudgets, tehranClock } from './quota.js';
 
 export { DivarScrapeWorkflow };
@@ -26,10 +26,27 @@ function html(body, status = 200) {
   });
 }
 
+async function setWorkflowRunning(env, value) {
+  await env.DB.prepare(`
+    INSERT INTO system_state (key, value, updated_at) VALUES ('workflow_running', ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).bind(String(value)).run();
+}
+
 async function startWorkflow(env, params = {}) {
   if (!env.DIVAR_WORKFLOW) throw new Error('Workflow binding is not configured');
+  const lock = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'workflow_running'").first();
+  if (String(lock?.value || '0') === '1') {
+    throw new Error('یک اجرای هم‌زمان از قبل در حال اجرا است.');
+  }
   const id = `divar-${Date.now()}-${crypto.randomUUID()}`;
-  return env.DIVAR_WORKFLOW.create({ id, params });
+  try {
+    await setWorkflowRunning(env, true);
+    return env.DIVAR_WORKFLOW.create({ id, params });
+  } catch (error) {
+    await setWorkflowRunning(env, false);
+    throw error;
+  }
 }
 
 function positiveInteger(value, fallback, maximum) {
@@ -195,7 +212,7 @@ async function getDailyTrend(env, days, neighborhoodSlug = '') {
 async function getQuota(env) {
   const settings = await getSettings(env);
   const limit = Math.max(DAILY_LISTING_LIMIT_MIN,
-    Math.min(DAILY_LISTING_LIMIT_MAX, positiveInteger(settings.daily_listing_limit, 100, DAILY_LISTING_LIMIT_MAX)));
+    Math.min(DAILY_LISTING_LIMIT_MAX, positiveInteger(settings.daily_listing_limit, DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX)));
   const { date, hour } = tehranClock();
   await env.DB.prepare('INSERT OR IGNORE INTO daily_ai_usage (usage_date) VALUES (?)').bind(date).run();
   const usage = await env.DB.prepare('SELECT * FROM daily_ai_usage WHERE usage_date = ?').bind(date).first();
@@ -222,7 +239,7 @@ async function getSettingsPayload(env) {
     fake_threshold: Number(settings.fake_threshold || 0.6),
     high_fake_threshold: Number(settings.high_fake_threshold || 0.8),
     daily_listing_limit: Math.max(DAILY_LISTING_LIMIT_MIN,
-      positiveInteger(settings.daily_listing_limit, 100, DAILY_LISTING_LIMIT_MAX)),
+      positiveInteger(settings.daily_listing_limit, DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX)),
     auto_neighborhoods: parseJson(settings.auto_neighborhoods, []),
     bait_keywords: parseJson(settings.bait_keywords, [])
   };

@@ -1,2 +1,3 @@
-export const DAILY_LISTING_LIMIT_MAX = 100;
+export const DAILY_LISTING_LIMIT_MAX = 150;
+export const DAILY_LISTING_LIMIT_DEFAULT = 150;
 export const DAILY_LISTING_LIMIT_MIN = 3;

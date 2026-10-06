@@ -25,6 +25,7 @@ export function parseLocalizedNumber(value) {
 }
 
 export async function logError(env, service, url, error, status = 0, responseSnippet = '') {
+  if (!env?.DB) return;
   try {
     await env.DB.prepare(
       'INSERT INTO request_logs (service, url, status, error, response_snippet) VALUES (?, ?, ?, ?, ?)'
@@ -35,6 +36,7 @@ export async function logError(env, service, url, error, status = 0, responseSni
 }
 
 export async function logSuccess(env, service, url, message, status = 200) {
+  if (!env?.DB) return;
   try {
     await env.DB.prepare(
       'INSERT INTO request_logs (service, url, status, error, response_snippet) VALUES (?, ?, ?, NULL, ?)'
