@@ -10,21 +10,21 @@ const API_HEADERS = {
 };
 let tehranPlacesPromise;
 
-async function getTehranDistrictIds() {
+async function getTehranNeighborhoodIds() {
   if (!tehranPlacesPromise) {
     tehranPlacesPromise = (async () => {
       const response = await fetch(PLACES_URL);
       if (!response.ok) throw new Error(`Divar places returned HTTP ${response.status}`);
       const places = await response.json();
       if (!Array.isArray(places)) throw new Error('Divar places response is not an array');
-      const districts = new Map();
+      const neighborhoods = new Map();
       for (const place of places) {
         if (String(place.parent) !== '1' || String(place.type) !== '4' || !place.id) continue;
         for (const slug of [place.slug, place.second_slug]) {
-          if (slug) districts.set(String(slug).toLowerCase(), String(place.id));
+          if (slug) neighborhoods.set(String(slug).toLowerCase(), String(place.id));
         }
       }
-      return districts;
+      return neighborhoods;
     })();
   }
 
@@ -36,15 +36,15 @@ async function getTehranDistrictIds() {
   }
 }
 
-async function resolveDistrictIds(districtSlugs) {
-  const places = districtSlugs.some((value) => !/^\d+$/.test(String(value)))
-    ? await getTehranDistrictIds()
+async function resolveNeighborhoodIds(neighborhoodSlugs) {
+  const places = neighborhoodSlugs.some((value) => !/^\d+$/.test(String(value)))
+    ? await getTehranNeighborhoodIds()
     : new Map();
-  return districtSlugs.map((value) => {
-    const district = String(value).trim();
-    if (/^\d+$/.test(district)) return district;
-    const id = places.get(district.toLowerCase());
-    if (!id) throw new Error(`Could not resolve Tehran district slug: ${district}`);
+  return neighborhoodSlugs.map((value) => {
+    const neighborhood = String(value).trim();
+    if (/^\d+$/.test(neighborhood)) return neighborhood;
+    const id = places.get(neighborhood.toLowerCase());
+    if (!id) throw new Error(`Could not resolve Tehran neighborhood slug: ${neighborhood}`);
     return id;
   });
 }
@@ -58,22 +58,71 @@ function imageValue(data) {
   return typeof image === 'string' ? image : image?.url || '';
 }
 
-const PERSIAN_LATIN = {
-  'ا': 'a', 'آ': 'a', 'أ': 'a', 'إ': 'e', 'ب': 'b', 'پ': 'p', 'ت': 't', 'ث': 's',
-  'ج': 'j', 'چ': 'ch', 'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'z', 'ر': 'r', 'ز': 'z',
-  'ژ': 'zh', 'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'z', 'ط': 't', 'ظ': 'z', 'ع': 'a',
-  'غ': 'gh', 'ف': 'f', 'ق': 'gh', 'ک': 'k', 'ك': 'k', 'گ': 'g', 'ل': 'l', 'م': 'm',
-  'ن': 'n', 'و': 'v', 'ه': 'h', 'ة': 'h', 'ی': 'i', 'ي': 'i', 'ئ': 'i', 'ؤ': 'v', 'ء': ''
-};
+function normalizeDigits(value) {
+  return String(value ?? '').replace(/[۰-۹]/g, (digit) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(digit).toString())
+    .replace(/[٬٫،]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-export function slugifyDistrict(value) {
-  return String(value || '')
-    .normalize('NFKC')
-    .replace(/[آ-یكءأإةؤئ]/g, (character) => PERSIAN_LATIN[character] || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-');
+function parseMoneyAmount(rawValue) {
+  const text = normalizeDigits(rawValue || '');
+  if (!text) return null;
+  const numeric = text.match(/\d+(?:[.,]\d+)+(?:\s*\d+)?|\d+/g);
+  if (!numeric) return null;
+  const parts = numeric.join('').replace(/,/g, '').replace(/\./g, '');
+  if (!parts) return null;
+  const scale = /میلیارد|بیلیون|billion/i.test(text) ? 1_000_000_000
+    : /میلیون|million/i.test(text) ? 1_000_000
+    : /هزار|thousand/i.test(text) ? 1_000
+    : 1;
+  const number = Number.parseInt(parts, 10);
+  if (!Number.isFinite(number)) return null;
+  return number * scale;
+}
+
+function extractMoneyByLabels(text, labels) {
+  if (!text) return null;
+  const normalized = String(text).replace(/\s+/g, ' ');
+  for (const label of labels) {
+    const pattern = new RegExp(`(?:${label})\\s*[:：]?\\s*([۰-۹0-9][۰-۹0-9,\s.]*?(?:\\s*(?:میلیون|هزار|میلیارد))?\\s*(?:تومان|ریال))`, 'iu');
+    const match = pattern.exec(normalized);
+    if (match) {
+      const parsed = parseMoneyAmount(match[1]);
+      if (parsed !== null) return parsed;
+    }
+  }
+  return null;
+}
+
+function extractListingPriceSignals(data, payload = {}) {
+  const fields = [
+    data.title,
+    data.description,
+    data.top_description_text,
+    data.middle_description_text,
+    data.bottom_description_text,
+    payload.web_info?.title,
+    payload.web_info?.description,
+    payload.title,
+    payload.description
+  ].filter(Boolean);
+
+  const deposit = fields
+    .map((field) => extractMoneyByLabels(field, ['ودیعه', 'پیش\s*پرداخت', 'رهن', 'قیمت\s*رهن', 'deposit']))
+    .find((value) => value !== null);
+  const rent = fields
+    .map((field) => extractMoneyByLabels(field, ['اجاره', 'کرایه', 'rent', 'monthly']))
+    .find((value) => value !== null);
+  const price = fields
+    .map((field) => extractMoneyByLabels(field, ['قیمت', 'قیمت\s*کل', 'total', 'price']))
+    .find((value) => value !== null);
+
+  return {
+    deposit_toman: deposit ?? null,
+    rent_toman: rent ?? null,
+    price_toman: price ?? deposit ?? rent ?? null
+  };
 }
 
 export function extractListingsFromApiResponse(response) {
@@ -86,37 +135,29 @@ export function extractListingsFromApiResponse(response) {
     const webInfo = payload.web_info || {};
     const token = data.token || payload.token;
     if (!token || listings.has(token)) continue;
-    const districtData = data.district || payload.district || {};
-    const districtNameFa = textValue(districtData.name_fa) || textValue(districtData.name) ||
-      textValue(data.district_name_fa) || textValue(webInfo.district_persian) ||
-      (typeof districtData === 'string' && /[\u0600-\u06ff]/.test(districtData) ? districtData : '');
-    const explicitDistrictSlug = textValue(districtData.slug) || textValue(data.district_slug) ||
-      textValue(payload.district_slug) || textValue(webInfo.district_slug) ||
-      (typeof districtData === 'string' && !/[\u0600-\u06ff]/.test(districtData) ? districtData : '');
-    const districtSlug = explicitDistrictSlug || slugifyDistrict(districtNameFa);
     const neighborhood = textValue(webInfo.district_persian) || textValue(data.middle_description_text);
     const description = [data.description, data.top_description_text, data.middle_description_text, data.bottom_description_text]
       .map(textValue)
       .filter(Boolean)
       .join(' | ');
+    const priceSignals = extractListingPriceSignals(data, payload);
     listings.set(token, {
       token,
       title: textValue(data.title),
       description: description || neighborhood,
       neighborhood,
-      district_slug: districtSlug,
-      district_name_fa: districtNameFa || districtSlug,
-      image_url: imageValue(data)
+      image_url: imageValue(data),
+      ...priceSignals
     });
   }
   return [...listings.values()];
 }
 
-export async function fetchListingsPage(env, cityId, category, page, districtSlugs, responseMetadata = {}) {
+export async function fetchListingsPage(env, cityId, category, page, neighborhoodSlugs, responseMetadata = {}) {
   try {
-    const districtIds = districtSlugs.length > 0 ? await resolveDistrictIds(districtSlugs) : [];
+    const neighborhoodIds = neighborhoodSlugs.length > 0 ? await resolveNeighborhoodIds(neighborhoodSlugs) : [];
     const formData = { category: { str: { value: category } } };
-    if (districtIds.length > 0) formData.districts = { repeated_string: { value: districtIds } };
+    if (neighborhoodIds.length > 0) formData.districts = { repeated_string: { value: neighborhoodIds } };
     const payload = {
       city_ids: [String(cityId)],
       search_data: { form_data: { data: formData } },
@@ -153,8 +194,8 @@ export async function fetchListingsPage(env, cityId, category, page, districtSlu
     }
 
     const count = extractListingsFromApiResponse(data).length;
-    const districtLabel = districtIds.length ? `district ${districtIds.join(',')}` : 'Tehran without a district filter';
-    await logSuccess(env, 'scraper', API_URL, `Got ${count} listings from ${districtLabel}`, response.status);
+    const neighborhoodLabel = neighborhoodIds.length ? `neighborhood ${neighborhoodIds.join(',')}` : 'Tehran without a neighborhood filter';
+    await logSuccess(env, 'scraper', API_URL, `Got ${count} listings from ${neighborhoodLabel}`, response.status);
     return data;
   } catch (error) {
     const message = `HTTP 0 - ${error?.message || error}`;
