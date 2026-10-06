@@ -17,7 +17,7 @@
     "class_name": "DivarScrapeWorkflow",
     "concurrency": { "limit": 1 }
   }],
-  "triggers": { "crons": ["0 */6 * * *"] },
+  "triggers": { "crons": ["30 6,18 * * *"] },
   "vars": {
     "DIVAR_BASE_URL": "https://divar.ir/s/tehran/rent-residential",
     "WORKER_URL": "https://divar-housing-finder.lizadfarshid.workers.dev"

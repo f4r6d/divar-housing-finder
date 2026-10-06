@@ -1,6 +1,14 @@
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = OFF;
 
-CREATE TABLE IF NOT EXISTS neighborhoods (
+DROP TABLE IF EXISTS listings;
+DROP TABLE IF EXISTS manual_runs;
+DROP TABLE IF EXISTS daily_ai_usage;
+DROP TABLE IF EXISTS scrape_state;
+DROP TABLE IF EXISTS neighborhoods;
+DROP TABLE IF EXISTS districts;
+DROP TABLE IF EXISTS regions;
+
+CREATE TABLE neighborhoods (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   divar_id TEXT UNIQUE NOT NULL,
   slug TEXT UNIQUE NOT NULL,
@@ -11,7 +19,7 @@ CREATE TABLE IF NOT EXISTS neighborhoods (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO neighborhoods (divar_id, slug, name_fa) VALUES
+INSERT INTO neighborhoods (divar_id, slug, name_fa) VALUES
   ('146', 'central-janat-abad', 'جنت‌آباد مرکزی'),
   ('148', 'south-janat-abad', 'جنت‌آباد جنوبی'),
   ('145', 'north-janat-abad', 'جنت‌آباد شمالی'),
@@ -19,7 +27,7 @@ INSERT OR IGNORE INTO neighborhoods (divar_id, slug, name_fa) VALUES
   ('4312', 'sardar-e-jangal', 'سردارجنگل'),
   ('170', 'kooy-e-ferdos', 'فردوس');
 
-CREATE TABLE IF NOT EXISTS listings (
+CREATE TABLE listings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   divar_token TEXT UNIQUE NOT NULL,
   url TEXT NOT NULL,
@@ -48,14 +56,12 @@ CREATE TABLE IF NOT EXISTS listings (
   FOREIGN KEY (neighborhood_id) REFERENCES neighborhoods(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_listings_neighborhood_scraped
-  ON listings(neighborhood_id, scraped_at DESC);
-CREATE INDEX IF NOT EXISTS idx_listings_extraction_source
-  ON listings(extraction_done, scrape_source, scraped_at);
-CREATE INDEX IF NOT EXISTS idx_listings_fake_label ON listings(fake_label);
-CREATE INDEX IF NOT EXISTS idx_listings_divar_token ON listings(divar_token);
+CREATE INDEX idx_listings_neighborhood_scraped ON listings(neighborhood_id, scraped_at DESC);
+CREATE INDEX idx_listings_extraction_source ON listings(extraction_done, scrape_source, scraped_at);
+CREATE INDEX idx_listings_fake_label ON listings(fake_label);
+CREATE INDEX idx_listings_divar_token ON listings(divar_token);
 
-CREATE TABLE IF NOT EXISTS daily_ai_usage (
+CREATE TABLE daily_ai_usage (
   usage_date TEXT PRIMARY KEY,
   total_calls INTEGER NOT NULL DEFAULT 0,
   auto_calls INTEGER NOT NULL DEFAULT 0,
@@ -64,7 +70,7 @@ CREATE TABLE IF NOT EXISTS daily_ai_usage (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS manual_runs (
+CREATE TABLE manual_runs (
   id TEXT PRIMARY KEY,
   neighborhood_id INTEGER NOT NULL,
   requested_count INTEGER NOT NULL,
@@ -76,34 +82,17 @@ CREATE TABLE IF NOT EXISTS manual_runs (
   FOREIGN KEY (neighborhood_id) REFERENCES neighborhoods(id)
 );
 
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT,
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
 INSERT OR IGNORE INTO settings (key, value) VALUES
-  ('fake_threshold', '0.6'),
-  ('high_fake_threshold', '0.8'),
-  ('daily_listing_limit', '100'),
-  ('auto_neighborhoods', '["central-janat-abad","south-janat-abad","north-janat-abad","shahin","sardar-e-jangal","kooy-e-ferdos"]'),
-  ('jev_weights', '{"price_vs_neighborhood_avg":0.40,"price_vs_size_ratio":0.25,"description_mismatch":0.20,"suspicious_keywords":0.15}'),
-  ('bait_keywords', '["قیمت توافقی","زیر قیمت","فوری","فرصت استثنایی","فقط امروز"]');
+  ('auto_neighborhoods', '["central-janat-abad","south-janat-abad","north-janat-abad","shahin","sardar-e-jangal","kooy-e-ferdos"]');
+UPDATE settings SET value = '100', updated_at = datetime('now')
+  WHERE key = 'daily_listing_limit';
+DELETE FROM settings WHERE key = 'max_listings_per_hood';
+UPDATE settings SET value = '{"price_vs_neighborhood_avg":0.40,"price_vs_size_ratio":0.25,"description_mismatch":0.20,"suspicious_keywords":0.15}', updated_at = datetime('now')
+  WHERE key = 'jev_weights';
+DELETE FROM system_state
+  WHERE key = 'district_region_backfill_v3'
+    OR key = 'district_discovery_last_run'
+    OR key = 'ai_quota_until'
+    OR key LIKE 'ai_calls_%';
 
-CREATE TABLE IF NOT EXISTS system_state (
-  key TEXT PRIMARY KEY,
-  value TEXT,
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS request_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  service TEXT NOT NULL,
-  url TEXT,
-  status INTEGER,
-  error TEXT,
-  response_snippet TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
+PRAGMA foreign_keys = ON;
