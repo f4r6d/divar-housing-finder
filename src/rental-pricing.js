@@ -1,4 +1,4 @@
-export const RENT_TO_DEPOSIT_MULTIPLIER = 30;
+export const RENT_TO_DEPOSIT_MULTIPLIER = 100 / 3;
 
 function positiveAmount(value) {
   if (value === null || value === undefined || value === '') return null;

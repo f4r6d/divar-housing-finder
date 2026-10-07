@@ -4,7 +4,7 @@ import { depositEquivalentToman } from '../src/rental-pricing.js';
 import { extractListingsFromApiResponse } from '../src/scraper.js';
 
 test('converts monthly rent into its deposit equivalent and adds the deposit', () => {
-  assert.equal(depositEquivalentToman({ deposit_toman: 500_000_000, rent_toman: 10_000_000 }), 800_000_000);
+  assert.equal(depositEquivalentToman({ deposit_toman: 500_000_000, rent_toman: 10_000_000 }), 833_333_333);
 });
 
 test('keeps deposit-only listings comparable', () => {
@@ -12,7 +12,7 @@ test('keeps deposit-only listings comparable', () => {
 });
 
 test('converts rent-only listings and falls back to the generic price', () => {
-  assert.equal(depositEquivalentToman({ rent_toman: 10_000_000 }), 300_000_000);
+  assert.equal(depositEquivalentToman({ rent_toman: 10_000_000 }), 333_333_333);
   assert.equal(depositEquivalentToman({ price_toman: 420_000_000 }), 420_000_000);
 });
 

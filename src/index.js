@@ -7,7 +7,7 @@ import { aiCallBudgets, tehranClock } from './quota.js';
 
 export { DivarScrapeWorkflow };
 
-const LABELS = new Set(['real', 'suspicious', 'fake']);
+const LABELS = new Set(['real', 'suspicious', 'fake', 'hamkhane']);
 const SERVICES = new Set(['scraper', 'neighborhood-discovery', 'workers-ai', 'jev', 'system']);
 const SORT_COLUMNS = new Map([
   ['name', 'n.name_fa'],
@@ -77,7 +77,7 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
   const bindFilter = search ? [`%${search}%`] : [];
   const query = `
     WITH recent AS (
-      SELECT * FROM listings WHERE scraped_at >= datetime('now', '-${days} days')
+      SELECT * FROM listings WHERE scraped_at >= datetime('now', '-${days} days') AND fake_label <> 'hamkhane'
     ),
     deposits AS (
       SELECT neighborhood_id, deposit_toman,
@@ -115,7 +115,8 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
     counts AS (
       SELECT neighborhood_id, COUNT(*) AS count,
         SUM(CASE WHEN fake_label = 'fake' THEN 1 ELSE 0 END) AS fake_count,
-        SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count
+        SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count,
+        SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END) AS hamkhane_count
       FROM recent GROUP BY neighborhood_id
     ),
     price_stats AS (
@@ -127,6 +128,7 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
       COALESCE(c.count, 0) AS count,
       COALESCE(c.fake_count, 0) AS fake_count,
       COALESCE(c.suspicious_count, 0) AS suspicious_count,
+      COALESCE(c.hamkhane_count, 0) AS hamkhane_count,
       ps.avg_deposit, ps.avg_rent, ps.avg_deposit_per_sqm,
       sm.median_deposit_per_sqm,
       dm.median_deposit, rm.median_rent
@@ -156,14 +158,15 @@ async function getSummary(env, days, neighborhoodSlug = '') {
     SELECT COUNT(*) AS count,
       SUM(CASE WHEN l.fake_label = 'fake' THEN 1 ELSE 0 END) AS fake_count,
       SUM(CASE WHEN l.fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count,
+      SUM(CASE WHEN l.fake_label = 'hamkhane' THEN 1 ELSE 0 END) AS hamkhane_count,
       SUM(CASE WHEN l.extraction_done = 0 THEN 1 ELSE 0 END) AS pending
     FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') ${filter}
+    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
   `).bind(...binds).first();
   const prices = await env.DB.prepare(`
     SELECT l.deposit_toman, l.rent_toman, l.size_m2
     FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') ${filter}
+    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
   `).bind(...binds).all();
   const rows = prices.results || [];
   return {
@@ -171,6 +174,7 @@ async function getSummary(env, days, neighborhoodSlug = '') {
     count: Number(aggregate?.count || 0),
     fake_count: Number(aggregate?.fake_count || 0),
     suspicious_count: Number(aggregate?.suspicious_count || 0),
+    hamkhane_count: Number(aggregate?.hamkhane_count || 0),
     pending: Number(aggregate?.pending || 0),
     average_deposit: average(rows.map((row) => Number(row.deposit_toman))),
     average_rent: average(rows.map((row) => Number(row.rent_toman))),
@@ -198,7 +202,7 @@ async function getDailyTrend(env, days, neighborhoodSlug = '') {
   const result = await env.DB.prepare(`
     SELECT date(l.scraped_at) AS day, l.deposit_toman
     FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') ${filter}
+    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
     ORDER BY day
   `).bind(...binds).all();
   const byDay = new Map();
@@ -313,8 +317,9 @@ async function apiRoute(request, env, url) {
       values.push(label);
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const listWhere = label === 'hamkhane' ? (where || 'WHERE 1=1') : `${where ? `${where} AND` : 'WHERE'} l.fake_label <> 'hamkhane'`;
     const count = await env.DB.prepare(`
-      SELECT COUNT(*) AS total FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id ${where}
+      SELECT COUNT(*) AS total FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id ${listWhere}
     `).bind(...values).first();
     const result = await env.DB.prepare(`
       SELECT l.id, l.divar_token, l.url, l.title, l.price_toman, l.rent_toman, l.deposit_toman,
@@ -322,7 +327,8 @@ async function apiRoute(request, env, url) {
         l.description, l.image_url, l.extracted_data, l.fake_label, l.fake_score, l.fake_reason,
         l.extraction_done, l.scraped_at, n.slug AS neighborhood_slug, n.name_fa AS neighborhood_name
       FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-      ${where} ORDER BY l.scraped_at DESC LIMIT ? OFFSET ?
+      ${listWhere}
+      ORDER BY l.scraped_at DESC LIMIT ? OFFSET ?
     `).bind(...values, pageSize, (page - 1) * pageSize).all();
     const listings = (result.results || []).map((listing) => ({
       ...listing,
@@ -347,7 +353,7 @@ async function apiRoute(request, env, url) {
     const slug = String(input.neighborhood || '');
     const count = Number(input.count);
     if (!Number.isInteger(count) || count < 1 || count > DAILY_LISTING_LIMIT_MAX) {
-      return json({ error: 'تعداد آگهی باید بین ۱ تا ۱۰۰ باشد.' }, 400);
+      return json({ error: 'تعداد آگهی باید بین ۱ تا ۱۵۰ باشد.' }, 400);
     }
     const neighborhood = await env.DB.prepare(
       'SELECT id FROM neighborhoods WHERE slug = ? AND is_active = 1'
@@ -398,6 +404,10 @@ async function apiRoute(request, env, url) {
     const fakeThreshold = Number(input.fake_threshold);
     const highThreshold = Number(input.high_fake_threshold);
     const selected = input.auto_neighborhoods;
+    const settingsPassword = String(input.settings_password || '');
+    if (settingsPassword !== '1311') {
+      return json({ error: 'رمز عبور تنظیمات اشتباه است.' }, 403);
+    }
     if (!Number.isInteger(dailyLimit) || dailyLimit < DAILY_LISTING_LIMIT_MIN || dailyLimit > DAILY_LISTING_LIMIT_MAX ||
         ![fakeThreshold, highThreshold].every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ||
         highThreshold < fakeThreshold || !Array.isArray(selected) || selected.length > 200) {

@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('fake_threshold', '0.6'),
   ('high_fake_threshold', '0.8'),
-  ('daily_listing_limit', '100'),
+  ('daily_listing_limit', '150'),
   ('auto_neighborhoods', '["central-janat-abad","south-janat-abad","north-janat-abad","shahin","sardar-e-jangal","kooy-e-ferdos"]'),
   ('jev_weights', '{"price_vs_neighborhood_avg":0.40,"price_vs_size_ratio":0.25,"description_mismatch":0.20,"suspicious_keywords":0.15}'),
   ('bait_keywords', '["قیمت توافقی","زیر قیمت","فوری","فرصت استثنایی","فقط امروز"]');
