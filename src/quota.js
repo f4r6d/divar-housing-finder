@@ -12,7 +12,7 @@ export function tehranClock(date = new Date()) {
 }
 
 export function aiCallBudgets(dailyLimit, usage = {}, hour = 10) {
-  const automaticShare = Math.floor(dailyLimit * 2 / 3);
+  const automaticShare = Math.floor(dailyLimit * 4 / 5);
   const manualShare = dailyLimit - automaticShare;
   const lateAutomaticLimit = hour >= 22 && Number(usage.manual_searches || 0) === 0
     ? dailyLimit

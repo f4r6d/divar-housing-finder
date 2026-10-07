@@ -10,9 +10,15 @@
     "db:init": "wrangler d1 execute divar-housing-db --remote --file=./schema.sql",
     "db:seed": "wrangler d1 execute divar-housing-db --remote --file=./seed/seed-neighborhoods.sql",
     "db:migrate-neighborhoods": "wrangler d1 execute divar-housing-db --remote --file=./migrations/0001_neighborhood_first_rebuild.sql",
+    "db:migrate-quota-and-labels": "wrangler d1 execute divar-housing-db --remote --file=./migrations/0002_daily_quota_and_listing_reclassification.sql",
+    "db:retry-failed-extractions": "wrangler d1 execute divar-housing-db --remote --file=./migrations/0003_retry_failed_extractions.sql",
+    "db:increase-daily-quota": "wrangler d1 execute divar-housing-db --remote --file=./migrations/0004_increase_daily_quota_to_500.sql",
     "db:init-local": "wrangler d1 execute divar-housing-db --local --file=./schema.sql",
     "db:seed-local": "wrangler d1 execute divar-housing-db --local --file=./seed/seed-neighborhoods.sql",
     "db:migrate-neighborhoods-local": "wrangler d1 execute divar-housing-db --local --file=./migrations/0001_neighborhood_first_rebuild.sql",
+    "db:migrate-quota-and-labels-local": "wrangler d1 execute divar-housing-db --local --file=./migrations/0002_daily_quota_and_listing_reclassification.sql",
+    "db:retry-failed-extractions-local": "wrangler d1 execute divar-housing-db --local --file=./migrations/0003_retry_failed_extractions.sql",
+    "db:increase-daily-quota-local": "wrangler d1 execute divar-housing-db --local --file=./migrations/0004_increase_daily_quota_to_500.sql",
     "db:console": "wrangler d1 execute divar-housing-db --remote --command \"SELECT id, title, fake_label FROM listings ORDER BY scraped_at DESC LIMIT 10\""
   },
   "devDependencies": {

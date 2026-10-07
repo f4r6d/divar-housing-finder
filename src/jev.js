@@ -24,19 +24,29 @@ function getNoul(result, key, fallback = 0) {
 }
 
 function listingNormalizedPrice(listing) {
-  return numeric(listing.deposit_toman || listing.deposit_equivalent_toman || depositEquivalentToman(listing));
+  return numeric(depositEquivalentToman(listing) || listing.deposit_equivalent_toman || listing.price_toman);
 }
 
 async function getNeighborhoodStats(env, listing, supplied) {
   if (supplied?.avg_price || supplied?.avg_price_per_sqm) return supplied;
   const row = await env.DB.prepare(`
-    SELECT AVG(COALESCE(NULLIF(deposit_toman, 0), NULLIF(deposit_equivalent_toman, 0), price_toman)) AS avg_price,
+    SELECT AVG(CASE
+        WHEN COALESCE(deposit_toman, 0) > 0 OR COALESCE(rent_toman, 0) > 0
+          THEN COALESCE(deposit_toman, 0) + COALESCE(rent_toman, 0) * (100.0 / 3.0)
+        ELSE COALESCE(NULLIF(deposit_equivalent_toman, 0), price_toman)
+      END) AS avg_price,
       AVG(CASE WHEN size_m2 > 0 THEN
-        COALESCE(NULLIF(deposit_toman, 0), NULLIF(deposit_equivalent_toman, 0), price_toman) / size_m2
+        CASE
+          WHEN COALESCE(deposit_toman, 0) > 0 OR COALESCE(rent_toman, 0) > 0
+            THEN (COALESCE(deposit_toman, 0) + COALESCE(rent_toman, 0) * (100.0 / 3.0)) / size_m2
+          ELSE COALESCE(NULLIF(deposit_equivalent_toman, 0), price_toman) / size_m2
+        END
       END) AS avg_price_per_sqm
     FROM listings
     WHERE neighborhood_id = ? AND extraction_done = 1
-      AND COALESCE(NULLIF(deposit_toman, 0), NULLIF(deposit_equivalent_toman, 0), price_toman) > 0
+      AND fake_label <> 'hamkhane'
+      AND (COALESCE(deposit_toman, 0) > 0 OR COALESCE(rent_toman, 0) > 0
+        OR COALESCE(NULLIF(deposit_equivalent_toman, 0), price_toman) > 0)
   `).bind(listing.neighborhood_id).first();
   return row || {};
 }
@@ -89,9 +99,9 @@ export async function evaluateListing(env, listing, suppliedNeighborhoodStats) {
         headers: { Authorization: `Bearer ${env.TYPESAFE_API_KEY}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           model: 'jev-1.13.0',
-          state: JSON.stringify({ title: listing.title, description: listing.description, price_toman: listing.price_toman, rent_toman: listing.rent_toman, deposit_toman: listing.deposit_toman, size_m2: size, rooms: listing.rooms, price_per_sqm: pricePerSqm, neighborhood_avg_deposit: neighborhoodAverage, neighborhood_avg_deposit_per_sqm: neighborhoodAveragePerSqm }),
+          state: JSON.stringify({ title: listing.title, description: listing.description, price_toman: listing.price_toman, rent_toman: listing.rent_toman, deposit_toman: listing.deposit_toman, size_m2: size, rooms: listing.rooms, price_per_sqm: pricePerSqm,           neighborhood_avg_deposit_equivalent: neighborhoodAverage, neighborhood_avg_equivalent_per_sqm: neighborhoodAveragePerSqm }),
           questions: {
-            is_price_realistic: { type: 'noul', instructions: 'Judge the Tehran rental listing primarily by its requested deposit, normalized per square meter against the same-neighborhood average deposit. Use deposit-equivalent only if no deposit is available. Return 1 if realistic, 0 if clearly implausibly low or bait.' },
+            is_price_realistic: { type: 'noul', instructions: 'Judge the Tehran rental listing by its deposit-equivalent value: deposit plus monthly rent multiplied by 100/3 (100 million toman deposit is equivalent to 3 million toman monthly rent). Compare that equivalent per square meter with the same-neighborhood average equivalent. Return 1 if realistic, 0 if clearly implausibly low or bait.' },
             has_bait_signals: { type: 'noul', instructions: 'Return 1 if this listing contains deceptive bait-price or urgency signals, otherwise 0.' },
             description_matches_price: { type: 'noul', instructions: 'Return 1 if the description supports the stated rental price, otherwise 0.' }
           }
@@ -132,8 +142,8 @@ export async function evaluateListing(env, listing, suppliedNeighborhoodStats) {
     reason = `انحراف قیمت: ${Math.round(priceDeviationFactor * 100)}٪، نسبت متری: ${Math.round(sqmRatioFactor * 100)}٪، نشانه‌های فریب: ${Math.round(bait * 100)}٪`;
     details = {
       method: 'typesafe-jev', response: remoteResult, price_per_sqm: pricePerSqm,
-      neighborhood_avg_deposit: neighborhoodAverage,
-      neighborhood_avg_deposit_per_sqm: neighborhoodAveragePerSqm
+      neighborhood_avg_deposit_equivalent: neighborhoodAverage,
+      neighborhood_avg_equivalent_per_sqm: neighborhoodAveragePerSqm
     };
   } else {
     const fallback = await heuristicResult(env, listing, neighborhoodStats, settings);

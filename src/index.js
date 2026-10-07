@@ -353,7 +353,7 @@ async function apiRoute(request, env, url) {
     const slug = String(input.neighborhood || '');
     const count = Number(input.count);
     if (!Number.isInteger(count) || count < 1 || count > DAILY_LISTING_LIMIT_MAX) {
-      return json({ error: 'تعداد آگهی باید بین ۱ تا ۱۵۰ باشد.' }, 400);
+      return json({ error: `تعداد آگهی باید بین ۱ تا ${DAILY_LISTING_LIMIT_MAX} باشد.` }, 400);
     }
     const neighborhood = await env.DB.prepare(
       'SELECT id FROM neighborhoods WHERE slug = ? AND is_active = 1'

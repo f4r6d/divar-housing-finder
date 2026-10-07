@@ -18,7 +18,7 @@ The application models Divar neighborhoods directly. It has no municipal-region 
 
 Cloudflare cron expressions use UTC. `30 6,18 * * *` runs at 10:00 and 22:00 Tehran time (UTC+3:30). Automatic work gives greater weight to neighborhoods with fewer fresh listings and longer time since their last check. A neighborhood with fewer current ads does not hold up the rest; its unused capacity flows to the remaining selected neighborhoods. It checks current Divar results instead of backfilling old ads.
 
-The daily limit is a count of Workers AI processing calls, not a count of model tokens or neurons. The current AI binding does not expose token/neuron usage to this application. By default, two thirds of the configured daily call limit are reserved for automatic work and one third for manual work. At 22:00, automation can use the unused manual reserve only if no manual search was started that Tehran day. If Workers AI reports quota exhaustion, the existing quota lock stops subsequent AI calls for up to 24 hours.
+The daily limit is a count of Workers AI processing calls, not a count of model tokens or neurons. The current AI binding does not expose token/neuron usage to this application. The configured 500-call daily limit reserves 400 calls for automatic work and 100 for manual work. At 22:00, automation can use the unused manual reserve only if no manual search was started that Tehran day. Cloudflare's account-level neuron limit still applies; if Workers AI reports quota exhaustion, the existing quota lock stops subsequent AI calls for up to 24 hours.
 
 ## Database and migration
 
@@ -26,10 +26,34 @@ The new schema contains neighborhoods, listings, daily AI usage, manual-run stat
 
 **`0001_neighborhood_first_rebuild.sql` is destructive:** it drops the old listing and location tables and starts with an empty listings table. Back up a database before applying it. The migration seeds the six resolvable default Divar neighborhoods and default automatic selection. A separate entry for “بلوار فردوس” is not present in Divar's Tehran neighborhood list; the closest matching place is “فردوس”, which is already selected, so it is not duplicated.
 
+`0002_daily_quota_and_listing_reclassification.sql` is non-destructive and should be run once on an existing database after deploying a release that supports 150 daily calls. It raises the saved daily setting to 150, recalculates deposit-equivalent amounts using 100 million toman deposit = 3 million toman monthly rent, identifies existing shared-room listings, and queues the remaining extracted listings for a fresh label evaluation.
+
+`0003_retry_failed_extractions.sql` re-queues prior extraction failures for automatic retry; apply it once after the daily capacity is available.
+
+`0004_increase_daily_quota_to_500.sql` sets the saved daily limit to 500 calls, split 400 automatic and 100 manual by the application. Workers AI's account-level neuron quota is separate and remains enforced by Cloudflare.
+
 For an existing database:
 
 ```sh
 npm run db:migrate-neighborhoods
+```
+
+To apply the non-destructive quota and reclassification update to an existing database:
+
+```sh
+npm run db:migrate-quota-and-labels
+```
+
+To queue previously failed extractions for automatic retry:
+
+```sh
+npm run db:retry-failed-extractions
+```
+
+To set the daily limit to 500 calls (400 automatic, 100 manual):
+
+```sh
+npm run db:increase-daily-quota
 ```
 
 For a new database:

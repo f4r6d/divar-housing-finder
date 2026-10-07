@@ -84,7 +84,7 @@ CREATE TABLE manual_runs (
 
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('auto_neighborhoods', '["central-janat-abad","south-janat-abad","north-janat-abad","shahin","sardar-e-jangal","kooy-e-ferdos"]');
-UPDATE settings SET value = '150', updated_at = datetime('now')
+UPDATE settings SET value = '500', updated_at = datetime('now')
   WHERE key = 'daily_listing_limit';
 DELETE FROM settings WHERE key = 'max_listings_per_hood';
 UPDATE settings SET value = '{"price_vs_neighborhood_avg":0.40,"price_vs_size_ratio":0.25,"description_mismatch":0.20,"suspicious_keywords":0.15}', updated_at = datetime('now')

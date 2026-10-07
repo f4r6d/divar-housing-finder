@@ -6,6 +6,7 @@ import { refreshNeighborhoodsIfDue } from './neighborhood-discovery.js';
 import { getSettings, isAiQuotaExhausted, logError, logSuccess } from './utils.js';
 import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
 import { depositEquivalentToman } from './rental-pricing.js';
+import { isSharedHousingListing } from './listing-classification.js';
 import { aiCallBudgets, neighborhoodTarget, tehranClock } from './quota.js';
 
 function parsePositiveSetting(settings, key, fallback) {
@@ -19,7 +20,7 @@ async function getUsage(env, date) {
 }
 
 async function reserveAiCall(env, date, source, dailyLimit, hour) {
-  const { manual_limit: manualShare } = aiCallBudgets(dailyLimit);
+  const { auto_limit: automaticShare, manual_limit: manualShare } = aiCallBudgets(dailyLimit);
   const row = await env.DB.prepare(`
     UPDATE daily_ai_usage
     SET total_calls = total_calls + 1,
@@ -33,7 +34,7 @@ async function reserveAiCall(env, date, source, dailyLimit, hour) {
         OR (? = 'manual' AND manual_calls < ?))
     RETURNING total_calls
   `).bind(source, source, date, dailyLimit, source, hour, dailyLimit,
-    Math.floor(dailyLimit * 2 / 3), source, manualShare).first();
+    automaticShare, source, manualShare).first();
   return Boolean(row);
 }
 
@@ -42,7 +43,7 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   let fetched = 0;
   let searched = false;
   let failed = false;
-  const maxPages = source === 'auto' ? 3 : Math.max(1, Math.ceil(wanted / 30) + 1);
+  const maxPages = source === 'auto' ? 3 : Math.max(3, Math.ceil(wanted / 30) * 3);
   for (let pageNumber = 1; pageNumber <= maxPages && inserted < wanted; pageNumber += 1) {
     const response = await step.do(`search-${source}-${neighborhood.slug}-${pageNumber}`, () =>
       fetchListingsPage(env, '1', 'residential-rent', pageNumber, [neighborhood.slug]));
@@ -57,12 +58,17 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
     fetched += candidates.length;
     const newListings = candidates.slice(0, wanted - inserted);
     for (const listing of newListings) {
+      const isSharedHousing = isSharedHousingListing(listing.title, listing.description);
       const result = await env.DB.prepare(`
         INSERT OR IGNORE INTO listings
-          (divar_token, url, title, description, image_url, neighborhood_id, scrape_source, extraction_done)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+          (divar_token, url, title, description, image_url, neighborhood_id, scrape_source, extraction_done,
+            fake_label, fake_reason, jev_done)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
       `).bind(listing.token, `https://divar.ir/v/${encodeURIComponent(listing.token)}`,
-        listing.title, listing.description, listing.image_url, neighborhood.id, source).run();
+        listing.title, listing.description, listing.image_url, neighborhood.id, source,
+        isSharedHousing ? 'hamkhane' : 'unknown',
+        isSharedHousing ? 'آگهی هم‌خانه است و اجارهٔ مستقل محسوب نمی‌شود.' : null,
+        isSharedHousing ? 1 : 0).run();
       inserted += Number(result.meta?.changes || 0);
     }
     if (inserted < wanted && candidates.length >= 30) {
@@ -85,7 +91,7 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   return { inserted, fetched, failed: failed || !searched };
 }
 
-async function extractPending(env, step, source, date, dailyLimit, maximum = 100, neighborhoodId = null) {
+async function extractPending(env, step, source, date, dailyLimit, maximum = DAILY_LISTING_LIMIT_MAX, neighborhoodId = null) {
   if (await isAiQuotaExhausted(env)) return { processed: 0, quota_locked: true };
   const usage = await getUsage(env, date);
   const { hour } = tehranClock();
@@ -112,16 +118,22 @@ async function extractPending(env, step, source, date, dailyLimit, maximum = 100
           .bind(listing.id).run();
         return { failed: true };
       }
+      const isSharedHousing = isSharedHousingListing(listing.title, listing.description, data.property_type);
       await env.DB.prepare(`
         UPDATE listings SET
           price_toman = COALESCE(?, price_toman), rent_toman = ?, deposit_toman = ?,
           deposit_equivalent_toman = ?, rent_deposit_flexible = ?,
           size_m2 = COALESCE(?, size_m2), rooms = COALESCE(?, rooms),
-          extracted_data = ?, extraction_done = 1, updated_at = datetime('now')
+          extracted_data = ?, extraction_done = 1,
+          fake_label = CASE WHEN ? THEN 'hamkhane' ELSE fake_label END,
+          fake_reason = CASE WHEN ? THEN 'آگهی هم‌خانه است و اجارهٔ مستقل محسوب نمی‌شود.' ELSE fake_reason END,
+          jev_done = CASE WHEN ? THEN 1 ELSE jev_done END,
+          updated_at = datetime('now')
         WHERE id = ?
       `).bind(data.price_toman ?? null, data.rent_toman ?? null, data.deposit_toman ?? null,
         depositEquivalentToman(data), data.rent_deposit_flexible === true ? 1 : 0,
-        data.size_m2 ?? null, data.rooms ?? null, JSON.stringify(data), listing.id).run();
+        data.size_m2 ?? null, data.rooms ?? null, JSON.stringify(data),
+        isSharedHousing ? 1 : 0, isSharedHousing ? 1 : 0, isSharedHousing ? 1 : 0, listing.id).run();
       return { failed: false };
     });
     if (result.quota_locked) {
@@ -140,7 +152,7 @@ async function extractPending(env, step, source, date, dailyLimit, maximum = 100
 
 async function evaluatePending(env, step) {
   const rows = await step.do('jev-pending', () => env.DB.prepare(`
-    SELECT * FROM listings WHERE extraction_done = 1 AND jev_done = 0
+    SELECT * FROM listings WHERE extraction_done = 1 AND jev_done = 0 AND fake_label <> 'hamkhane'
     ORDER BY scraped_at DESC LIMIT 50
   `).all());
   for (const listing of rows.results || []) {

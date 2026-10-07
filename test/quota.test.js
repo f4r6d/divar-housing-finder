@@ -2,31 +2,45 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { aiCallBudgets, neighborhoodTarget, tehranClock } from '../src/quota.js';
 
-test('reserves two thirds of the daily calls for automatic processing', () => {
+test('reserves four fifths of the daily calls for automatic processing', () => {
   assert.deepEqual(aiCallBudgets(100, { total_calls: 20, auto_calls: 20, manual_calls: 0 }), {
-    auto_limit: 66,
-    manual_limit: 34,
+    auto_limit: 80,
+    manual_limit: 20,
     remaining: 80,
-    auto_remaining: 46,
-    manual_remaining: 34
+    auto_remaining: 60,
+    manual_remaining: 20
   });
 });
 
 test('only releases the manual reserve to automation after 10pm when unused', () => {
-  assert.equal(aiCallBudgets(100, { auto_calls: 66, manual_searches: 0 }, 22).auto_remaining, 34);
-  assert.equal(aiCallBudgets(100, { auto_calls: 66, manual_searches: 1 }, 22).auto_remaining, 0);
+  assert.equal(aiCallBudgets(500, { auto_calls: 400, manual_searches: 0 }, 22).auto_remaining, 100);
+  assert.equal(aiCallBudgets(500, { auto_calls: 400, manual_searches: 1 }, 22).auto_remaining, 0);
 });
 
 test('reports the manual share and remaining capacity separately', () => {
   const budgets = aiCallBudgets(100, {
-    total_calls: 80,
-    auto_calls: 66,
-    manual_calls: 14,
+    total_calls: 90,
+    auto_calls: 80,
+    manual_calls: 10,
     manual_searches: 1
   }, 14);
-  assert.equal(budgets.manual_remaining, 20);
-  assert.equal(budgets.remaining, 20);
+  assert.equal(budgets.manual_remaining, 10);
+  assert.equal(budgets.remaining, 10);
   assert.equal(budgets.auto_remaining, 0);
+});
+
+test('reserves 400 automatic and 100 manual calls from a 500-call daily limit', () => {
+  assert.deepEqual(aiCallBudgets(500, {
+    total_calls: 134,
+    auto_calls: 100,
+    manual_calls: 34
+  }), {
+    auto_limit: 400,
+    manual_limit: 100,
+    remaining: 366,
+    auto_remaining: 300,
+    manual_remaining: 66
+  });
 });
 
 test('uses Tehran local date and hour for schedule boundaries', () => {

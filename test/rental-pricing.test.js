@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { depositEquivalentToman } from '../src/rental-pricing.js';
+import { isSharedHousingListing } from '../src/listing-classification.js';
 import { extractListingsFromApiResponse } from '../src/scraper.js';
 
 test('converts monthly rent into its deposit equivalent and adds the deposit', () => {
@@ -14,6 +15,13 @@ test('keeps deposit-only listings comparable', () => {
 test('converts rent-only listings and falls back to the generic price', () => {
   assert.equal(depositEquivalentToman({ rent_toman: 10_000_000 }), 333_333_333);
   assert.equal(depositEquivalentToman({ price_toman: 420_000_000 }), 420_000_000);
+});
+
+test('identifies shared-housing listings across Persian spacing variants and extracted property type', () => {
+  assert.equal(isSharedHousingListing('هم‌خانه خانم', ''), true);
+  assert.equal(isSharedHousingListing('هم خانه آقا', ''), true);
+  assert.equal(isSharedHousingListing('اجاره آپارتمان دو خواب', '', 'room'), true);
+  assert.equal(isSharedHousingListing('اجاره آپارتمان دو خواب', ''), false);
 });
 
 test('extracts deposit and rent values from Divar search widgets', () => {
