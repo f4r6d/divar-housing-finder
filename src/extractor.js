@@ -20,7 +20,7 @@ export async function extractListingData(env, listing) {
     const text = [listing.description, listing.neighborhood].filter(Boolean).join('\n').slice(0, 4000);
     if (!listing.title && !text) {
       await logError(env, 'workers-ai', listing.url, 'Listing summary has no text to extract');
-      return null;
+      return { unextractable: true };
     }
 
     const result = await env.AI.run(MODEL, {
@@ -36,7 +36,13 @@ export async function extractListingData(env, listing) {
   } catch (error) {
     const message = String(error?.message || error);
     await logError(env, 'workers-ai', listing.url, error);
-    if (/4006|daily free allocation/i.test(message)) await markAiQuotaExhausted(env);
-    return null;
+    if (/4006|daily free allocation/i.test(message)) {
+      await markAiQuotaExhausted(env);
+      return { error: 'quota_exhausted', message };
+    }
+    if (/subrequest|too many subrequests/i.test(message)) {
+      return { error: 'subrequest_limit', message };
+    }
+    return { error: 'extraction_failed', message };
   }
 }

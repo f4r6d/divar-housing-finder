@@ -113,10 +113,15 @@ async function extractPending(env, step, source, date, dailyLimit, maximum = DAI
     const result = await step.do(`extract-${source}-${listing.id}`, async () => {
       if (!await reserveAiCall(env, date, source, dailyLimit, hour)) return { quota_locked: true };
       const data = await extractListingData(env, listing);
-      if (!data) {
-        await env.DB.prepare("UPDATE listings SET extraction_done = -1, updated_at = datetime('now') WHERE id = ?")
-          .bind(listing.id).run();
-        return { failed: true };
+      if (!data || data.error) {
+        if (data?.error === 'subrequest_limit' || data?.error === 'quota_exhausted') {
+          return { fatal_error: true, error: data.error };
+        }
+        if (data?.unextractable) {
+          await env.DB.prepare("UPDATE listings SET extraction_done = -1, updated_at = datetime('now') WHERE id = ?")
+            .bind(listing.id).run();
+        }
+        return { failed: true, error: data?.error || 'unknown' };
       }
       const isSharedHousing = isSharedHousingListing(listing.title, listing.description, data.property_type);
       await env.DB.prepare(`
@@ -136,11 +141,13 @@ async function extractPending(env, step, source, date, dailyLimit, maximum = DAI
         isSharedHousing ? 1 : 0, isSharedHousing ? 1 : 0, isSharedHousing ? 1 : 0, listing.id).run();
       return { failed: false };
     });
-    if (result.quota_locked) {
+    if (result.quota_locked || result.fatal_error) {
       quotaLocked = true;
       break;
     }
-    processed += 1;
+    if (!result.failed) {
+      processed += 1;
+    }
     if (result.failed && await isAiQuotaExhausted(env)) {
       quotaLocked = true;
       break;

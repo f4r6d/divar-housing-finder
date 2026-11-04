@@ -5,6 +5,7 @@
   "compatibility_date": "2026-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "limits": { "subrequests": 1000 },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "divar-housing-db",
