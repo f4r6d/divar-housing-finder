@@ -7,3 +7,6 @@ node_modules/
 !.env.example
 coverage/
 dist/
+.cache/
+.documentation-build.html
+DOCUMENTATION_FA.pdf.tmp

@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "node --test",
+    "docs:pdf": "node scripts/build-persian-pdf.mjs",
     "db:init": "wrangler d1 execute divar-housing-db --remote --file=./schema.sql",
     "db:seed": "wrangler d1 execute divar-housing-db --remote --file=./seed/seed-neighborhoods.sql",
     "db:migrate-neighborhoods": "wrangler d1 execute divar-housing-db --remote --file=./migrations/0001_neighborhood_first_rebuild.sql",
