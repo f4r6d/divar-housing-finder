@@ -66,6 +66,22 @@ function safeDays(value) {
   return positiveInteger(value, 30, 90);
 }
 
+function dailyLimitFromSettings(settings) {
+  return Math.max(DAILY_LISTING_LIMIT_MIN,
+    Math.min(DAILY_LISTING_LIMIT_MAX,
+      positiveInteger(settings.daily_listing_limit, DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX)));
+}
+
+async function loadUsage(env, date) {
+  await env.DB.prepare('INSERT OR IGNORE INTO daily_ai_usage (usage_date) VALUES (?)').bind(date).run();
+  return env.DB.prepare('SELECT * FROM daily_ai_usage WHERE usage_date = ?').bind(date).first();
+}
+
+async function isAiLocked(env) {
+  const row = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'ai_quota_until'").first();
+  return Number(row?.value || 0) > Date.now();
+}
+
 async function loadNeighborhoodStats(env, options = {}) {
   if ((options.days ?? 30) === CACHE_WINDOW_DAYS) {
     const cached = await loadCachedNeighborhoodStats(env, options);
@@ -180,11 +196,9 @@ async function getDailyTrend(env, days, neighborhoodSlug = '') {
 
 async function getQuota(env) {
   const settings = await getSettings(env);
-  const limit = Math.max(DAILY_LISTING_LIMIT_MIN,
-    Math.min(DAILY_LISTING_LIMIT_MAX, positiveInteger(settings.daily_listing_limit, DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX)));
+  const limit = dailyLimitFromSettings(settings);
   const { date, hour } = tehranClock();
-  await env.DB.prepare('INSERT OR IGNORE INTO daily_ai_usage (usage_date) VALUES (?)').bind(date).run();
-  const usage = await env.DB.prepare('SELECT * FROM daily_ai_usage WHERE usage_date = ?').bind(date).first();
+  const usage = await loadUsage(env, date);
   const budgets = aiCallBudgets(limit, usage, hour);
   return {
     date,
@@ -194,11 +208,11 @@ async function getQuota(env) {
     manual_used: Number(usage.manual_calls || 0),
     auto_limit: budgets.auto_limit,
     manual_limit: budgets.manual_limit,
+    auto_remaining: budgets.auto_remaining,
     manual_remaining: budgets.manual_remaining,
     remaining: budgets.remaining,
     manual_searches: Number(usage.manual_searches || 0),
-    quota_exhausted: await env.DB.prepare("SELECT value FROM system_state WHERE key = 'ai_quota_until'").first()
-      .then((row) => Number(row?.value || 0) > Date.now())
+    quota_exhausted: await isAiLocked(env)
   };
 }
 
@@ -207,8 +221,7 @@ async function getSettingsPayload(env) {
   return {
     fake_threshold: Number(settings.fake_threshold || 0.6),
     high_fake_threshold: Number(settings.high_fake_threshold || 0.8),
-    daily_listing_limit: Math.max(DAILY_LISTING_LIMIT_MIN,
-      positiveInteger(settings.daily_listing_limit, DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX)),
+    daily_listing_limit: dailyLimitFromSettings(settings),
     auto_neighborhoods: parseJson(settings.auto_neighborhoods, []),
     bait_keywords: parseJson(settings.bait_keywords, [])
   };
@@ -326,9 +339,18 @@ async function apiRoute(request, env, url) {
       'SELECT id FROM neighborhoods WHERE slug = ? AND is_active = 1'
     ).bind(slug).first();
     if (!neighborhood) return json({ error: 'محله پیدا نشد.' }, 404);
+    if (await isAiLocked(env)) {
+      return json({ error: 'سهمیهٔ هوش مصنوعی موقتاً قفل شده است. بعداً دوباره تلاش کنید.' }, 429);
+    }
+    const { date, hour } = tehranClock();
+    const settings = await getSettings(env);
+    const usage = await loadUsage(env, date);
+    const budgets = aiCallBudgets(dailyLimitFromSettings(settings), usage, hour);
+    if (budgets.manual_remaining <= 0) {
+      return json({ error: 'سهمیهٔ دریافت دستی امروز تمام شده است. فردا دوباره تلاش کنید.' }, 429);
+    }
+    const effectiveCount = Math.min(count, budgets.manual_remaining);
     const id = crypto.randomUUID();
-    const { date } = tehranClock();
-    await env.DB.prepare('INSERT OR IGNORE INTO daily_ai_usage (usage_date) VALUES (?)').bind(date).run();
     await env.DB.batch([
       env.DB.prepare("UPDATE daily_ai_usage SET manual_searches = manual_searches + 1, updated_at = datetime('now') WHERE usage_date = ?")
         .bind(date),
@@ -342,7 +364,7 @@ async function apiRoute(request, env, url) {
         .bind(String(error?.message || error).slice(0, 1000), id).run();
       throw error;
     }
-    return json({ id, status: 'queued' }, 202);
+    return json({ id, status: 'queued', requested_count: count, effective_count: effectiveCount }, 202);
   }
 
   const manualRunMatch = pathname.match(/^\/api\/manual-runs\/([a-f0-9-]{36})$/i);
@@ -355,7 +377,11 @@ async function apiRoute(request, env, url) {
     if (!run) return json({ error: 'درخواست پیدا نشد.' }, 404);
     const statusLabels = {
       queued: 'در صف', running: 'در حال اجرا', scraped: 'در حال تحلیل',
-      complete: 'کامل', failed: 'ناموفق', quota_exhausted: 'سهمیهٔ هوش مصنوعی تمام شد'
+      complete: 'کامل شد',
+      partial: 'کمتر از درخواست دریافت شد',
+      empty: 'آگهی تازه‌ای پیدا نشد',
+      failed: 'ناموفق',
+      quota_exhausted: 'سهمیهٔ دریافت دستی امروز تمام شده است'
     };
     return json({ ...run, status_fa: statusLabels[run.status] || run.status });
   }

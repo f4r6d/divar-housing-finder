@@ -1,3 +1,5 @@
 export const DAILY_LISTING_LIMIT_MAX = 500;
 export const DAILY_LISTING_LIMIT_DEFAULT = 500;
 export const DAILY_LISTING_LIMIT_MIN = 3;
+export const LISTINGS_PER_PAGE = 30;
+export const MAX_PAGES_PER_NEIGHBORHOOD = 20;

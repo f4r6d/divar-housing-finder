@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiCallBudgets, neighborhoodTarget, tehranClock } from '../src/quota.js';
+import { aiCallBudgets, listingPagesFor, manualRunOutcome, neighborhoodTarget, tehranClock } from '../src/quota.js';
 
 test('reserves four fifths of the daily calls for automatic processing', () => {
   assert.deepEqual(aiCallBudgets(100, { total_calls: 20, auto_calls: 20, manual_calls: 0 }), {
@@ -60,4 +60,19 @@ test('prioritizes neighborhoods with fewer recent listings and reassigns unused 
   const secondTarget = neighborhoodTarget(neighborhoods, 1, 60 - firstTarget);
   assert.ok(firstTarget > secondTarget);
   assert.equal(neighborhoodTarget(neighborhoods, 1, 1), 1);
+});
+
+test('derives listing pages from the requested count so large targets stay reachable', () => {
+  assert.equal(listingPagesFor(10), 3);
+  assert.equal(listingPagesFor(90), 9);
+  assert.equal(listingPagesFor(100), 12);
+  assert.equal(listingPagesFor(310), 20);
+  assert.equal(listingPagesFor(400), 20);
+});
+
+test('reports the real manual-run outcome instead of always claiming completion', () => {
+  assert.equal(manualRunOutcome({ requested: 100, inserted: 100 }), 'complete');
+  assert.equal(manualRunOutcome({ requested: 100, inserted: 20 }), 'partial');
+  assert.equal(manualRunOutcome({ requested: 100, inserted: 0 }), 'empty');
+  assert.equal(manualRunOutcome({ requested: 100, inserted: 20, quotaLocked: true }), 'quota_exhausted');
 });

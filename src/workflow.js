@@ -7,7 +7,7 @@ import { getSettings, isAiQuotaExhausted, logError, logSuccess } from './utils.j
 import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
 import { depositEquivalentToman } from './rental-pricing.js';
 import { isSharedHousingListing } from './listing-classification.js';
-import { aiCallBudgets, neighborhoodTarget, tehranClock } from './quota.js';
+import { aiCallBudgets, listingPagesFor, manualRunOutcome, neighborhoodTarget, tehranClock } from './quota.js';
 import { refreshAggregates } from './stats.js';
 
 function parsePositiveSetting(settings, key, fallback) {
@@ -44,7 +44,7 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   let fetched = 0;
   let searched = false;
   let failed = false;
-  const maxPages = source === 'auto' ? 3 : Math.max(3, Math.ceil(wanted / 30) * 3);
+  const maxPages = listingPagesFor(wanted);
   for (let pageNumber = 1; pageNumber <= maxPages && inserted < wanted; pageNumber += 1) {
     const response = await step.do(`search-${source}-${neighborhood.slug}-${pageNumber}`, () =>
       fetchListingsPage(env, '1', 'residential-rent', pageNumber, [neighborhood.slug]));
@@ -86,13 +86,13 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   if (runId && searched) {
     await env.DB.prepare(`
       UPDATE manual_runs SET fetched_count = ?, status = ?, error = ?, finished_at = datetime('now') WHERE id = ?
-    `).bind(inserted, failed ? 'failed' : inserted ? 'scraped' : 'complete',
+    `).bind(inserted, failed ? 'failed' : inserted ? 'scraped' : 'empty',
       failed ? 'ادامهٔ دریافت از دیوار ناموفق بود.' : null, runId).run();
   }
   return { inserted, fetched, failed: failed || !searched };
 }
 
-async function extractPending(env, step, source, date, dailyLimit, maximum = DAILY_LISTING_LIMIT_MAX, neighborhoodId = null) {
+async function extractPending(env, step, source, date, dailyLimit, maximum = DAILY_LISTING_LIMIT_MAX, neighborhoodId = null, order = 'ASC') {
   if (await isAiQuotaExhausted(env)) return { processed: 0, quota_locked: true };
   const usage = await getUsage(env, date);
   const { hour } = tehranClock();
@@ -105,7 +105,7 @@ async function extractPending(env, step, source, date, dailyLimit, maximum = DAI
     SELECT * FROM listings
     WHERE extraction_done = 0 AND scrape_source = ?
       AND (? IS NULL OR neighborhood_id = ?)
-    ORDER BY scraped_at ASC LIMIT ?
+    ORDER BY scraped_at ${order === 'DESC' ? 'DESC' : 'ASC'} LIMIT ?
   `).bind(source, neighborhoodId, neighborhoodId, Math.min(maximum, sourceLimit)).all());
 
   let processed = 0;
@@ -196,20 +196,32 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
         try {
           const usage = await getUsage(this.env, now.date);
           const remaining = aiCallBudgets(dailyLimit, usage).manual_remaining;
-          const target = Math.min(Number(run.requested_count), remaining);
-          const scraped = target > 0
-            ? await scrapeNeighborhood(this.env, step, {
+          if (remaining <= 0) {
+            await this.env.DB.prepare(`
+              UPDATE manual_runs SET status = 'quota_exhausted', error = ?, finished_at = datetime('now') WHERE id = ?
+            `).bind('سهمیهٔ دریافت دستی امروز تمام شده است. فردا دوباره تلاش کنید.', run.run_id).run();
+          } else {
+            const requested = Number(run.requested_count);
+            const target = Math.min(requested, remaining);
+            const scraped = await scrapeNeighborhood(this.env, step, {
               id: run.neighborhood_id, slug: run.slug, name_fa: run.name_fa
-            }, target, 'manual', run.run_id)
-            : { failed: false };
-          if (scraped.failed) throw new Error('دریافت آگهی از دیوار ناموفق بود.');
-          else await this.env.DB.prepare("UPDATE manual_runs SET status = 'complete', finished_at = datetime('now') WHERE id = ?")
-            .bind(run.run_id).run();
-          const extracted = await extractPending(this.env, step, 'manual', now.date, dailyLimit, target || 1, run.neighborhood_id);
-          if (extracted.quota_locked) await logError(this.env, 'workers-ai', null, 'سهمیهٔ پردازش هوش مصنوعی به پایان رسیده است.');
-          await this.env.DB.prepare(`
-            UPDATE manual_runs SET status = ?, finished_at = datetime('now') WHERE id = ?
-          `).bind(extracted.quota_locked ? 'quota_exhausted' : 'complete', run.run_id).run();
+            }, target, 'manual', run.run_id);
+            if (scraped.failed) throw new Error('دریافت آگهی از دیوار ناموفق بود.');
+            let extracted = { quota_locked: false };
+            if (scraped.inserted > 0) {
+              extracted = await extractPending(this.env, step, 'manual', now.date, dailyLimit,
+                scraped.inserted, run.neighborhood_id, 'DESC');
+              if (extracted.quota_locked) {
+                await logError(this.env, 'workers-ai', null, 'سهمیهٔ پردازش هوش مصنوعی به پایان رسیده است.');
+              }
+            }
+            const status = manualRunOutcome({
+              requested, inserted: scraped.inserted, quotaLocked: extracted.quota_locked
+            });
+            await this.env.DB.prepare(`
+              UPDATE manual_runs SET status = ?, finished_at = datetime('now') WHERE id = ?
+            `).bind(status, run.run_id).run();
+          }
         } catch (error) {
           await this.env.DB.prepare(`
             UPDATE manual_runs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?

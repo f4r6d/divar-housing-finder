@@ -1,3 +1,5 @@
+import { LISTINGS_PER_PAGE, MAX_PAGES_PER_NEIGHBORHOOD } from './constants.js';
+
 export function tehranClock(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Tehran',
@@ -27,6 +29,22 @@ export function aiCallBudgets(dailyLimit, usage = {}, hour = 10) {
     auto_remaining: Math.max(0, lateAutomaticLimit - autoCalls),
     manual_remaining: Math.max(0, Math.min(manualShare - manualCalls, dailyLimit - totalCalls))
   };
+}
+
+export function listingPagesFor(wanted, {
+  perPage = LISTINGS_PER_PAGE,
+  max = MAX_PAGES_PER_NEIGHBORHOOD,
+  multiplier = 3
+} = {}) {
+  const requested = Math.max(0, Math.ceil(Number(wanted) || 0));
+  return Math.min(max, Math.max(3, Math.ceil(requested / perPage) * multiplier));
+}
+
+export function manualRunOutcome({ requested, inserted, quotaLocked = false }) {
+  if (quotaLocked) return 'quota_exhausted';
+  if (inserted <= 0) return 'empty';
+  if (inserted < requested) return 'partial';
+  return 'complete';
 }
 
 export function neighborhoodTarget(neighborhoods, index, remaining) {

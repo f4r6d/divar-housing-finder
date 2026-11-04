@@ -11,12 +11,16 @@ The application models Divar neighborhoods directly. It has no municipal-region 
 - Deposit is the primary comparison metric: the dashboard shows average and median deposit, median deposit per square meter, monthly rent, counts, and daily deposit trends. Prices are asking prices from listings, not verified contract prices.
 - Neighborhood statistics include listing count, average and median deposit and rent, fake/suspicious counts, and last scrape time; the table is searchable, sortable, and paginated.
 - Listing cards show extracted deposit, rent, size, room count, description, review status, and a link to Divar.
-- Manual scraping accepts one neighborhood and a requested number of listings. The interface reports daily Workers AI call capacity and the manual share remaining.
+- Manual scraping accepts one neighborhood and a requested number of listings. The count input is capped by the manual share remaining today; the quota panel shows it, and when the share is zero the input and start button are disabled.
 - Automatic scraping only visits selected neighborhoods. Its default list includes central/south/north Jannat Abad, Shahin, Sardar-e-Jangal, and Ferdos.
 
 ## Daily schedule and AI capacity
 
 Cloudflare cron expressions use UTC. `30 6,18 * * *` runs at 10:00 and 22:00 Tehran time (UTC+3:30). Automatic work gives greater weight to neighborhoods with fewer fresh listings and longer time since their last check. A neighborhood with fewer current ads does not hold up the rest; its unused capacity flows to the remaining selected neighborhoods. It checks current Divar results instead of backfilling old ads.
+
+Fetch depth follows the quota target instead of a fixed page count: `min(20, max(3, ceil(target / 30) * 3))` pages of 30 ads each. A target of 90 ads searches at least 9 pages; a 310-ad target searches 20 pages, the cap. Because `divar_token` is unique, rerunning a search mainly returns duplicates; "fetched" in the UI counts newly inserted ads only.
+
+The manual flow checks the manual share before creating a run. If the share is zero, `POST /api/manual-runs` returns 429 and no workflow starts. Otherwise the effective target is `min(requested, manual_remaining)`, returned as `effective_count`, and the run finishes as `complete`, `partial`, `empty`, `quota_exhausted`, or `failed`. Manual extraction analyzes the newest ads first.
 
 The daily limit is a count of Workers AI processing calls, not a count of model tokens or neurons. The current AI binding does not expose token/neuron usage to this application. The configured 500-call daily limit reserves 400 calls for automatic work and 100 for manual work. At 22:00, automation can use the unused manual reserve only if no manual search was started that Tehran day. Cloudflare's account-level neuron limit still applies; if Workers AI reports quota exhaustion, the existing quota lock stops subsequent AI calls for up to 24 hours.
 
@@ -97,9 +101,9 @@ Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then us
 - `GET /api/stats` — city-wide 30-day summary using the same `overall` shape as analytics.
 - `GET /api/neighborhoods?page=1&page_size=20&search=<text>&sort=count` — neighborhood statistics; `all=1` returns the full active list for selection controls.
 - `GET /api/listings?page=1&page_size=20&neighborhood=<slug>&label=suspicious&search=<text>` — searchable, filtered, paginated listings.
-- `POST /api/manual-runs` — start a manual search with `{ "neighborhood": "<slug>", "count": 10 }`.
-- `GET /api/manual-runs/<id>` — inspect manual-run status.
-- `GET /api/quota` — daily AI calls, automatic/manual budgets, and remaining capacity.
+- `POST /api/manual-runs` — start a manual search with `{ "neighborhood": "<slug>", "count": 10 }`; returns `requested_count`, `effective_count`, and 429 when the manual share is zero or AI is locked.
+- `GET /api/manual-runs/<id>` — inspect manual-run status (`queued`, `running`, `scraped`, `complete`, `partial`, `empty`, `quota_exhausted`, `failed`) and its localized label.
+- `GET /api/quota` — daily AI calls, automatic/manual budgets, `auto_remaining`, `manual_remaining`, `remaining`, and the AI lock state.
 - `GET /api/settings` and `POST /api/settings` — read or update selected automatic neighborhoods and analysis thresholds (password required: `1311`).
 - `GET /api/logs?limit=100` — recent service logs.
 - `POST /api/discover-neighborhoods` — explicitly refresh the neighborhood list.
