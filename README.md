@@ -26,17 +26,53 @@
 
 این سامانه به پایگاه داده رابطه‌ای لبه‌ای **Cloudflare D1** متصل است (مبتنی بر استاندارد SQLite با پشتیبانی کامل از Foreign Keys، تراکنش‌های اتمیک و Window Functions).
 
-### دیاگرام رابطه موجودیت‌ها (ER Diagram)
+### دیاگرام مدل داده‌ای و ساختار جداول (ER & Database Architecture)
+
+```mermaid
+flowchart TD
+    classDef core fill:#eef6ff,stroke:#0071e3,stroke-width:2px,color:#0f172a;
+    classDef ops fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#0f172a;
+    classDef sys fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+
+    subgraph Core ["🔹 هسته اصلی داده‌های مسکن (Core Data)"]
+        direction TB
+        N["<b>neighborhoods (جدول محله‌ها)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🏷️ divar_id: TEXT (Unique)<br/>🏷️ slug: TEXT (Unique)<br/>📝 name_fa: TEXT<br/>🏙️ city_slug: TEXT<br/>⚡ is_active: INTEGER<br/>⏱️ last_scraped_at: TEXT<br/>📅 created_at: TEXT"]:::core
+
+        L["<b>listings (جدول آگهی‌های مسکن)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🏷️ divar_token: TEXT (Unique)<br/>🔗 neighborhood_id: INTEGER (FK)<br/>🌐 url: TEXT | 📌 title: TEXT<br/>💰 deposit_toman: INTEGER (ودیعه)<br/>💵 rent_toman: INTEGER (اجاره ماهانه)<br/>💎 deposit_equivalent_toman: INTEGER (ودیعه معادل)<br/>🔄 rent_deposit_flexible: INTEGER (تبدیل‌پذیر)<br/>📐 size_m2: REAL | 🚪 rooms: INTEGER<br/>🏷️ fake_label: TEXT (real/suspicious/fake/hamkhane)<br/>📊 fake_score: REAL | 💬 fake_reason: TEXT<br/>⚙️ extraction_done: INTEGER | 📅 scraped_at: TEXT"]:::core
+    end
+
+    subgraph Operations ["⚙️ مدیریت عملیات و سهمیه روزانه (Operations & Quota)"]
+        direction TB
+        MR["<b>manual_runs (درخواست‌های دستی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: TEXT (PK - UUID)<br/>🔗 neighborhood_id: INTEGER (FK)<br/>🎯 requested_count: INTEGER<br/>📥 fetched_count: INTEGER<br/>🚦 status: TEXT<br/>⏱️ started_at: TEXT | 🏁 finished_at: TEXT"]:::ops
+
+        DAU["<b>daily_ai_usage (سهمیه روزانه هوش مصنوعی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 usage_date: TEXT (PK - YYYY-MM-DD)<br/>🔢 total_calls: INTEGER (سقف ۵۰۰)<br/>🤖 auto_calls: INTEGER (سهمیه خودکار تا ۴۰۰)<br/>👤 manual_calls: INTEGER (سهمیه دستی تا ۱۰۰)<br/>🔍 manual_searches: INTEGER<br/>🔄 updated_at: TEXT"]:::ops
+    end
+
+    subgraph ConfigSystem ["📋 پیکربندی و لاگ‌های سیستم (System & Settings)"]
+        direction TB
+        S["<b>settings (تنظیمات سامانه)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 key: TEXT (PK)<br/>🔹 value: TEXT<br/>🔄 updated_at: TEXT"]:::sys
+
+        SS["<b>system_state (وضعیت سیستم)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 key: TEXT (PK)<br/>🔹 value: TEXT<br/>🔄 updated_at: TEXT"]:::sys
+
+        RL["<b>request_logs (گزارش‌های ارتباطی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🌐 service: TEXT<br/>🔗 url: TEXT<br/>🚦 status: INTEGER<br/>⚠️ error: TEXT<br/>📅 created_at: TEXT"]:::sys
+    end
+
+    N -->|"1 : N (هر محله شامل چندین آگهی)"| L
+    N -->|"1 : N (هدف درخواست‌های جستجوی دستی)"| MR
+```
+
+<details>
+<summary><b>مشاهده دیاگرام با استاندارد متنی Mermaid Crow's Foot ER</b> (کلیک کنید)</summary>
 
 ```mermaid
 erDiagram
-    neighborhoods ||--o{ listings : "دارد"
-    neighborhoods ||--o{ manual_runs : "اجرا روی"
+    neighborhoods ||--o{ listings : has
+    neighborhoods ||--o{ manual_runs : targets
 
     neighborhoods {
         INTEGER id PK
-        TEXT divar_id UK
-        TEXT slug UK
+        TEXT divar_id
+        TEXT slug
         TEXT name_fa
         TEXT city_slug
         INTEGER is_active
@@ -46,7 +82,7 @@ erDiagram
 
     listings {
         INTEGER id PK
-        TEXT divar_token UK
+        TEXT divar_token
         TEXT url
         TEXT title
         INTEGER price_toman
@@ -72,15 +108,6 @@ erDiagram
         TEXT updated_at
     }
 
-    daily_ai_usage {
-        TEXT usage_date PK
-        INTEGER total_calls
-        INTEGER auto_calls
-        INTEGER manual_calls
-        INTEGER manual_searches
-        TEXT updated_at
-    }
-
     manual_runs {
         TEXT id PK
         INTEGER neighborhood_id FK
@@ -90,6 +117,15 @@ erDiagram
         TEXT error
         TEXT started_at
         TEXT finished_at
+    }
+
+    daily_ai_usage {
+        TEXT usage_date PK
+        INTEGER total_calls
+        INTEGER auto_calls
+        INTEGER manual_calls
+        INTEGER manual_searches
+        TEXT updated_at
     }
 
     settings {
@@ -114,6 +150,8 @@ erDiagram
         TEXT created_at
     }
 ```
+
+</details>
 
 ### تشریح جداول پایگاه داده
 

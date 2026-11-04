@@ -106,94 +106,132 @@ flowchart TD
 
 پایگاه داده سامانه از نوع رابطه‌ای (Relational) بوده و با هدف پایداری، سرعت بالا و رعایت اصول نرمال‌سازی پیاده‌سازی شده است.
 
-### دیاگرام رابطه موجودیت‌ها (ER Diagram)
+### دیاگرام مدل داده‌ای و ساختار جداول (ER & Database Architecture)
+
+```mermaid
+flowchart TD
+    classDef core fill:#eef6ff,stroke:#0071e3,stroke-width:2px,color:#0f172a;
+    classDef ops fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#0f172a;
+    classDef sys fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+
+    subgraph Core ["🔹 هسته اصلی داده‌های مسکن (Core Data)"]
+        direction TB
+        N["<b>neighborhoods (جدول محله‌ها)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🏷️ divar_id: TEXT (Unique)<br/>🏷️ slug: TEXT (Unique)<br/>📝 name_fa: TEXT<br/>🏙️ city_slug: TEXT<br/>⚡ is_active: INTEGER<br/>⏱️ last_scraped_at: TEXT<br/>📅 created_at: TEXT"]:::core
+
+        L["<b>listings (جدول آگهی‌های مسکن)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🏷️ divar_token: TEXT (Unique)<br/>🔗 neighborhood_id: INTEGER (FK)<br/>🌐 url: TEXT | 📌 title: TEXT<br/>💰 deposit_toman: INTEGER (ودیعه)<br/>💵 rent_toman: INTEGER (اجاره ماهانه)<br/>💎 deposit_equivalent_toman: INTEGER (ودیعه معادل)<br/>🔄 rent_deposit_flexible: INTEGER (تبدیل‌پذیر)<br/>📐 size_m2: REAL | 🚪 rooms: INTEGER<br/>🏷️ fake_label: TEXT (real/suspicious/fake/hamkhane)<br/>📊 fake_score: REAL | 💬 fake_reason: TEXT<br/>⚙️ extraction_done: INTEGER | 📅 scraped_at: TEXT"]:::core
+    end
+
+    subgraph Operations ["⚙️ مدیریت عملیات و سهمیه روزانه (Operations & Quota)"]
+        direction TB
+        MR["<b>manual_runs (درخواست‌های دستی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: TEXT (PK - UUID)<br/>🔗 neighborhood_id: INTEGER (FK)<br/>🎯 requested_count: INTEGER<br/>📥 fetched_count: INTEGER<br/>🚦 status: TEXT<br/>⏱️ started_at: TEXT | 🏁 finished_at: TEXT"]:::ops
+
+        DAU["<b>daily_ai_usage (سهمیه روزانه هوش مصنوعی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 usage_date: TEXT (PK - YYYY-MM-DD)<br/>🔢 total_calls: INTEGER (سقف ۵۰۰)<br/>🤖 auto_calls: INTEGER (سهمیه خودکار تا ۴۰۰)<br/>👤 manual_calls: INTEGER (سهمیه دستی تا ۱۰۰)<br/>🔍 manual_searches: INTEGER<br/>🔄 updated_at: TEXT"]:::ops
+    end
+
+    subgraph ConfigSystem ["📋 پیکربندی و لاگ‌های سیستم (System & Settings)"]
+        direction TB
+        S["<b>settings (تنظیمات سامانه)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 key: TEXT (PK)<br/>🔹 value: TEXT<br/>🔄 updated_at: TEXT"]:::sys
+
+        SS["<b>system_state (وضعیت سیستم)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 key: TEXT (PK)<br/>🔹 value: TEXT<br/>🔄 updated_at: TEXT"]:::sys
+
+        RL["<b>request_logs (گزارش‌های ارتباطی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 id: INTEGER (PK)<br/>🌐 service: TEXT<br/>🔗 url: TEXT<br/>🚦 status: INTEGER<br/>⚠️ error: TEXT<br/>📅 created_at: TEXT"]:::sys
+    end
+
+    N -->|"1 : N (هر محله شامل چندین آگهی)"| L
+    N -->|"1 : N (هدف درخواست‌های جستجوی دستی)"| MR
+```
+
+<details>
+<summary><b>مشاهده دیاگرام با استاندارد متنی Mermaid Crow's Foot ER</b> (کلیک کنید)</summary>
 
 ```mermaid
 erDiagram
-    neighborhoods ||--o{ listings : "has"
-    neighborhoods ||--o{ manual_runs : "targets"
+    neighborhoods ||--o{ listings : has
+    neighborhoods ||--o{ manual_runs : targets
 
     neighborhoods {
-        INTEGER id PK "شناسه محله"
-        TEXT divar_id UK "شناسه در دیوار"
-        TEXT slug UK "اسلاگ انگلیسی"
-        TEXT name_fa "نام فارسی"
-        TEXT city_slug "شهر (tehran)"
-        INTEGER is_active "فعال/غیرفعال"
-        TEXT last_scraped_at "آخرین پیمایش"
-        TEXT created_at "تاریخ ایجاد"
+        INTEGER id PK
+        TEXT divar_id
+        TEXT slug
+        TEXT name_fa
+        TEXT city_slug
+        INTEGER is_active
+        TEXT last_scraped_at
+        TEXT created_at
     }
 
     listings {
-        INTEGER id PK "شناسه سیستمی"
-        TEXT divar_token UK "توکن آگهی دیوار"
-        TEXT url "نشانی اینترنتی"
-        TEXT title "عنوان آگهی"
-        INTEGER price_toman "قیمت کل"
-        INTEGER rent_toman "اجاره ماهانه (تومان)"
-        INTEGER deposit_toman "ودیعه (تومان)"
-        INTEGER deposit_equivalent_toman "ودیعه معادل (تومان)"
-        INTEGER rent_deposit_flexible "قابلیت تبدیل رهن/اجاره"
-        REAL size_m2 "متراژ"
-        INTEGER rooms "تعداد خواب"
-        INTEGER neighborhood_id FK "کلید خارجی محله"
-        TEXT description "توضیحات"
-        TEXT image_url "نشانی تصویر"
-        TEXT extracted_data "داده خام خروجی هوش مصنوعی"
-        INTEGER extraction_done "وضعیت استخراج (1, 0, -1)"
-        TEXT jev_result "جزییات ارزیابی تقلب"
-        REAL jev_score "امتیاز ریسک"
-        INTEGER jev_done "وضعیت ارزیابی"
-        TEXT fake_label "برچسب (real, suspicious, fake, hamkhane)"
-        REAL fake_score "نمره فیک"
-        TEXT fake_reason "دلیل برچسب"
-        TEXT scrape_source "منبع (auto, manual)"
-        TEXT scraped_at "زمان ثبت آگهی"
-        TEXT updated_at "زمان آخرین ویرایش"
-    }
-
-    daily_ai_usage {
-        TEXT usage_date PK "تاریخ به وقت تهران (YYYY-MM-DD)"
-        INTEGER total_calls "مجموع فراخوانی‌ها"
-        INTEGER auto_calls "فراخوانی‌های خودکار"
-        INTEGER manual_calls "فراخوانی‌های دستی"
-        INTEGER manual_searches "تعداد جستجوهای دستی"
-        TEXT updated_at "تاریخ بروزرسانی"
+        INTEGER id PK
+        TEXT divar_token
+        TEXT url
+        TEXT title
+        INTEGER price_toman
+        INTEGER rent_toman
+        INTEGER deposit_toman
+        INTEGER deposit_equivalent_toman
+        INTEGER rent_deposit_flexible
+        REAL size_m2
+        INTEGER rooms
+        INTEGER neighborhood_id FK
+        TEXT description
+        TEXT image_url
+        TEXT extracted_data
+        INTEGER extraction_done
+        TEXT jev_result
+        REAL jev_score
+        INTEGER jev_done
+        TEXT fake_label
+        REAL fake_score
+        TEXT fake_reason
+        TEXT scrape_source
+        TEXT scraped_at
+        TEXT updated_at
     }
 
     manual_runs {
-        TEXT id PK "شناسه UUID اجرا"
-        INTEGER neighborhood_id FK "کلید خارجی محله"
-        INTEGER requested_count "تعداد درخواستی"
-        INTEGER fetched_count "تعداد دریافت‌شده"
-        TEXT status "وضعیت (queued, running, scraped, complete, failed, quota_exhausted)"
-        TEXT error "پیام خطا"
-        TEXT started_at "زمان آغاز"
-        TEXT finished_at "زمان پایان"
+        TEXT id PK
+        INTEGER neighborhood_id FK
+        INTEGER requested_count
+        INTEGER fetched_count
+        TEXT status
+        TEXT error
+        TEXT started_at
+        TEXT finished_at
+    }
+
+    daily_ai_usage {
+        TEXT usage_date PK
+        INTEGER total_calls
+        INTEGER auto_calls
+        INTEGER manual_calls
+        INTEGER manual_searches
+        TEXT updated_at
     }
 
     settings {
-        TEXT key PK "کلید تنظیم"
-        TEXT value "مقدار (متن یا JSON)"
-        TEXT updated_at "تاریخ بروزرسانی"
+        TEXT key PK
+        TEXT value
+        TEXT updated_at
     }
 
     system_state {
-        TEXT key PK "کلید وضعیت سیستم"
-        TEXT value "مقدار"
-        TEXT updated_at "تاریخ بروزرسانی"
+        TEXT key PK
+        TEXT value
+        TEXT updated_at
     }
 
     request_logs {
-        INTEGER id PK "شناسه لاگ"
-        TEXT service "نام سرویس"
-        TEXT url "نشانی وب فراخوانی‌شده"
-        INTEGER status "کد وضعیت HTTP"
-        TEXT error "شرح خطا"
-        TEXT response_snippet "خلاصه پاسخ"
-        TEXT created_at "تاریخ ثبت"
+        INTEGER id PK
+        TEXT service
+        TEXT url
+        INTEGER status
+        TEXT error
+        TEXT response_snippet
+        TEXT created_at
     }
 ```
+
+</details>
 
 ### فرهنگ داده‌ها (Data Dictionary)
 
