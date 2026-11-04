@@ -1,5 +1,7 @@
 # Divar Housing Finder
 
+**Live dashboard:** [divar-housing-finder.lizadfarshid.workers.dev](https://divar-housing-finder.lizadfarshid.workers.dev/) · **Persian documentation:** [DOCUMENTATION_FA.md](./DOCUMENTATION_FA.md)
+
 A Cloudflare Worker that samples Tehran rental listings from Divar, extracts listing details with Workers AI, evaluates suspicious prices, and serves a Persian, right-to-left dashboard backed by Cloudflare D1.
 
 The application models Divar neighborhoods directly. It has no municipal-region table, neighborhood-to-region map, or region filter. Automatic neighborhood refresh runs at most once every seven days; an explicit refresh is also available. These endpoints and their response formats can change without notice.
@@ -111,5 +113,5 @@ Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then us
 
 ## Operational notes
 
-The dashboard has no authentication. Keep its deployed URL private; an unprotected URL is not access control. Divar may block automated requests or change its internal endpoints. Check the applicable terms and local requirements before operating a scraper. Fake-price labels are review signals, not definitive claims about advertisers.
+The dashboard has no authentication, and the deployed URL is published in this README. Anyone with the link can start manual runs and consume the daily AI quota; put the deployment behind Cloudflare Access or a similar gate if that is a concern. Divar may block automated requests or change its internal endpoints. Check the applicable terms and local requirements before operating a scraper. Fake-price labels are review signals, not definitive claims about advertisers.
 
