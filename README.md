@@ -1,94 +1,332 @@
-# Divar Housing Finder
+# سامانه هوشمند خانه‌یاب و پایش بازار مسکن دیوار (Divar Housing Finder)
 
-A Cloudflare Worker that samples Tehran rental listings from Divar, extracts listing details with Workers AI, evaluates suspicious prices, and serves a Persian, right-to-left dashboard backed by Cloudflare D1.
+یک سامانه اطلاعاتی هوشمند و سرورلس (Serverless) مبتنی بر **Cloudflare Workers**، پایگاه داده **Cloudflare D1 (SQLite)** و مدل‌های زبانی بزرگ **Cloudflare Workers AI** جهت جمع‌آوری، استخراج خودکار مشخصات، پایش قیمت‌های رهن و اجاره، و شناسایی آگهی‌های مشکوک و فیک در محله‌های تهران به همراه داشبورد تحلیلی تعاملی راست‌به‌چپ (RTL).
 
-The application models Divar neighborhoods directly. It has no municipal-region table, neighborhood-to-region map, or region filter. Automatic neighborhood refresh runs at most once every seven days; an explicit refresh is also available. These endpoints and their response formats can change without notice.
+---
 
-## Dashboard
+## ۱. معرفی و حوزه کسب‌وکار (Business Domain)
 
-- The overview shows the five neighborhoods with the most collected listings in the last 30 days.
-- A searchable neighborhood selector shows analysis for one neighborhood; it is limited to neighborhoods with listings.
-- Deposit is the primary comparison metric: the dashboard shows average and median deposit, median deposit per square meter, monthly rent, counts, and daily deposit trends. Prices are asking prices from listings, not verified contract prices.
-- Neighborhood statistics include listing count, average and median deposit and rent, fake/suspicious counts, and last scrape time; the table is searchable, sortable, and paginated.
-- Listing cards show extracted deposit, rent, size, room count, description, review status, and a link to Divar.
-- Manual scraping accepts one neighborhood and a requested number of listings. The interface reports daily Workers AI call capacity and the manual share remaining.
-- Automatic scraping only visits selected neighborhoods. Its default list includes central/south/north Jannat Abad, Shahin, Sardar-e-Jangal, and Ferdos.
+بازار مسکن و به‌ویژه بازار رهن و اجاره در کلان‌شهرهایی مانند تهران، از چالش‌های بنیادین اقتصادی و اجتماعی شهروندان است. بسترهایی نظیر وب‌سایت **دیوار** بستر اصلی دادوستد مستقیم ملک میان مالکان، مستأجران و مشاوران املاک هستند. با این وجود، این بازار با چالش‌های عمده‌ای روبرو است:
+- **آگهی‌های طعمه (Bait) و قیمت‌های غیرواقعی/جعلی**: درج ودیعه و اجاره بسیار پایین‌تر از عرف بازار جهت کشاندن متقاضی به تماس.
+- **تنوع شدید در شیوه ثبت ارقام و تبدیل رهن و اجاره**: برخی آگهی‌ها فقط رهن، برخی اجاره و برخی قابل تبدیل هستند.
+- **آگهی‌های هم‌خانه و اتاق مشترک**: این دسته از آگهی‌ها به اشتباه در بخش آپارتمان مستقل قرار گرفته و میانگین آماری محله‌ها را منحرف می‌کنند.
+- **نبود تحلیل لحظه‌ای و شفاف از وضعیت واقعی ودیعه و اجاره در سطح محله‌ها**.
 
-## Daily schedule and AI capacity
+**سامانه خانه‌یاب دیوار** به عنوان یک سامانه اطلاعاتی هوشمند برای حل این مسائل طراحی شده است:
+1. به‌صورت دوره‌ای و خودکار، ساختار و شناسه محله‌های تهران را از سرورهای دیوار دریافت و به‌روزرسانی می‌کند.
+2. بر اساس زمان‌بندی منظم روزانه (ساعت ۱۰ صبح و ساعت ۱۰ شب به وقت تهران)، آگهی‌های تازه محله‌های هدف را پیمایش و در دیتابیس ثبت می‌کند.
+3. با استفاده از مدل زبانی هوش مصنوعی (`@cf/qwen/qwen3-30b-a3b-fp8`)، اطلاعات کلیدی متن آگهی (ودیعه، اجاره، متراژ، تعداد اتاق، قابلیت تبدیل و سیگنال‌های فریب) را استخراج و مقادیر را نرمال‌سازی می‌کند.
+4. بر اساس فرمول عرف بازار مسکن ایران (هر ۱۰۰ میلیون تومان ودیعه معادل ۳ میلیون تومان اجاره ماهانه)، ارزش «ودیعه معادل» را محاسبه می‌کند.
+5. به کمک موتور تحلیل آماری-هیوریستیک و مقایسه متری با میانگین همان محله، آگهی‌ها را در دسته‌های **معمولی (Real)**، **مشکوک (Suspicious)**، **جعلی (Fake)** و **هم‌خانه (Hamkhane)** طبقه‌بندی می‌کند.
+6. آمارهای توصیفی (میانگین، میانه، روند روزانه، میانه ودیعه بر متر مربع) را در یک داشبورد فارسی و وب‌سرویس‌های RESTful در اختیار کاربر قرار می‌دهد.
 
-Cloudflare cron expressions use UTC. `30 6,18 * * *` runs at 10:00 and 22:00 Tehran time (UTC+3:30). Automatic work gives greater weight to neighborhoods with fewer fresh listings and longer time since their last check. A neighborhood with fewer current ads does not hold up the rest; its unused capacity flows to the remaining selected neighborhoods. It checks current Divar results instead of backfilling old ads.
+---
 
-The daily limit is a count of Workers AI processing calls, not a count of model tokens or neurons. The current AI binding does not expose token/neuron usage to this application. The configured 500-call daily limit reserves 400 calls for automatic work and 100 for manual work. At 22:00, automation can use the unused manual reserve only if no manual search was started that Tehran day. Cloudflare's account-level neuron limit still applies; if Workers AI reports quota exhaustion, the existing quota lock stops subsequent AI calls for up to 24 hours.
+## ۲. مدل داده‌ای و ساختار پایگاه داده (Data Model & Schema)
 
-## Database and migration
+این سامانه به پایگاه داده رابطه‌ای لبه‌ای **Cloudflare D1** متصل است (مبتنی بر استاندارد SQLite با پشتیبانی کامل از Foreign Keys، تراکنش‌های اتمیک و Window Functions).
 
-The new schema contains neighborhoods, listings, daily AI usage, manual-run status, settings, workflow state, and request logs. The old region hierarchy, mapping data, scrape state, and listings are removed by the rebuild migration.
+### دیاگرام رابطه موجودیت‌ها (ER Diagram)
 
-**`0001_neighborhood_first_rebuild.sql` is destructive:** it drops the old listing and location tables and starts with an empty listings table. Back up a database before applying it. The migration seeds the six resolvable default Divar neighborhoods and default automatic selection. A separate entry for “بلوار فردوس” is not present in Divar's Tehran neighborhood list; the closest matching place is “فردوس”, which is already selected, so it is not duplicated.
+```mermaid
+erDiagram
+    neighborhoods ||--o{ listings : "دارد"
+    neighborhoods ||--o{ manual_runs : "اجرا روی"
 
-`0002_daily_quota_and_listing_reclassification.sql` is non-destructive and should be run once on an existing database after deploying a release that supports 150 daily calls. It raises the saved daily setting to 150, recalculates deposit-equivalent amounts using 100 million toman deposit = 3 million toman monthly rent, identifies existing shared-room listings, and queues the remaining extracted listings for a fresh label evaluation.
+    neighborhoods {
+        INTEGER id PK
+        TEXT divar_id UK
+        TEXT slug UK
+        TEXT name_fa
+        TEXT city_slug
+        INTEGER is_active
+        TEXT last_scraped_at
+        TEXT created_at
+    }
 
-`0003_retry_failed_extractions.sql` re-queues prior extraction failures for automatic retry; apply it once after the daily capacity is available.
+    listings {
+        INTEGER id PK
+        TEXT divar_token UK
+        TEXT url
+        TEXT title
+        INTEGER price_toman
+        INTEGER rent_toman
+        INTEGER deposit_toman
+        INTEGER deposit_equivalent_toman
+        INTEGER rent_deposit_flexible
+        REAL size_m2
+        INTEGER rooms
+        INTEGER neighborhood_id FK
+        TEXT description
+        TEXT image_url
+        TEXT extracted_data
+        INTEGER extraction_done
+        TEXT jev_result
+        REAL jev_score
+        INTEGER jev_done
+        TEXT fake_label
+        REAL fake_score
+        TEXT fake_reason
+        TEXT scrape_source
+        TEXT scraped_at
+        TEXT updated_at
+    }
 
-`0004_increase_daily_quota_to_500.sql` sets the saved daily limit to 500 calls, split 400 automatic and 100 manual by the application. Workers AI's account-level neuron quota is separate and remains enforced by Cloudflare.
+    daily_ai_usage {
+        TEXT usage_date PK
+        INTEGER total_calls
+        INTEGER auto_calls
+        INTEGER manual_calls
+        INTEGER manual_searches
+        TEXT updated_at
+    }
 
-For an existing database:
+    manual_runs {
+        TEXT id PK
+        INTEGER neighborhood_id FK
+        INTEGER requested_count
+        INTEGER fetched_count
+        TEXT status
+        TEXT error
+        TEXT started_at
+        TEXT finished_at
+    }
 
-```sh
-npm run db:migrate-neighborhoods
+    settings {
+        TEXT key PK
+        TEXT value
+        TEXT updated_at
+    }
+
+    system_state {
+        TEXT key PK
+        TEXT value
+        TEXT updated_at
+    }
+
+    request_logs {
+        INTEGER id PK
+        TEXT service
+        TEXT url
+        INTEGER status
+        TEXT error
+        TEXT response_snippet
+        TEXT created_at
+    }
 ```
 
-To apply the non-destructive quota and reclassification update to an existing database:
+### تشریح جداول پایگاه داده
 
-```sh
-npm run db:migrate-quota-and-labels
+1. **`neighborhoods` (محله‌ها)**:
+   - ذخیره مشخصات محله‌های شهر تهران دریافت شده از نقشه و متادیتای دیوار (`divar_id`، `slug`، نام فارسی `name_fa`، وضعیت فعال بودن و تاریخ آخرین پیمایش).
+2. **`listings` (آگهی‌های مسکن)**:
+   - هسته مرکزی سیستم؛ شامل شناسه یکتای دیوار (`divar_token`)، نشانی آگهی، عناوین، مبالغ ودیعه و اجاره خام و استخراج‌شده، ارزش ودیعه معادل (`deposit_equivalent_toman`)، متراژ، تعداد اتاق، داده‌های ساختاریافته JSON از هوش مصنوعی، برچسب سلامت آگهی (`fake_label`: real, suspicious, fake, hamkhane)، امتیاز ارزیابی و ارتباط کلید خارجی با جدول محله‌ها.
+3. **`daily_ai_usage` (مدیریت سهمیه روزانه هوش مصنوعی)**:
+   - مدیریت سهمیه تفکیک‌شده روزانه (مجموع درخواست‌ها، درخواست‌های خودکار، درخواست‌های دستی و تعداد جستجوهای دستی) برای اعمال محدودیت سخت‌گیرانه سهمیه ۵۰۰ فراخوانی در روز.
+4. **`manual_runs` (ردگیری درخواست‌های دستی)**:
+   - تاریخچه و وضعیت کارهای دریافت دستی به تفکیک محله، تعداد درخواستی، تعداد دریافت شده و وضعیت پیشرفت (`queued`, `running`, `scraped`, `complete`, `failed`, `quota_exhausted`).
+5. **`settings` (تنظیمات سامانه)**:
+   - پارامترهای پویا شامل آستانه‌های کشف آگهی مشکوک (`fake_threshold`) و جعلی (`high_fake_threshold`)، سقف پردازش روزانه (`daily_listing_limit = 500`)، لیست محله‌های تحت پیمایش خودکار (`auto_neighborhoods`)، کلمات کلیدی طعمه (`bait_keywords`) و وزن‌های ارزیابی.
+6. **`system_state` (وضعیت سراسری سامانه)**:
+   - نگهداری قفل‌های هم‌زمانی اجرای ورک‌فلو (`workflow_running`)، زمان آخرین بروزرسانی لیست محله‌ها (`neighborhood_discovery_last_run`) و وضعیت تعلیق احتمالی سهمیه کلادفلر (`ai_quota_until`).
+7. **`request_logs` (لاگ‌های سیستمی)**:
+   - لاگ تمام ارتباطات خارجی شبکه (دیوار، ورکر هوش مصنوعی، سرویس Jev و خطاهای سیستمی) با ایندکس زمانی برای عیب‌یابی سریع.
+
+---
+
+## ۳. نحوه عملکرد و معماری سامانه
+
+### الف) دریافت دوره‌ای محله‌ها (Neighborhood Discovery)
+سامانه به‌صورت دوره‌ای (هر ۷ روز یک‌بار یا با درخواست دستی کاربر از طریق دکمه یا API) به اندپوینت رسمی نقشه دیوار مراجعه کرده (`https://map.divarcdn.com/places-web.json`) و تمامی محله‌های مربوط به تهران (`parent = 1` و `type = 4`) را استخراج و در جدول `neighborhoods` به روش `UPSERT` همگام‌سازی می‌کند.
+
+### ب) زمان‌بندی روزانه (Cron Schedule)
+در فایل پیکربندی `wrangler.jsonc` تریگر زمان‌بندی شده روی عبارت استاندارد کرون تنظیم شده است:
+```text
+30 6,18 * * * (بر حسب UTC)
 ```
+با توجه به اختلاف ساعت رسمی تهران (UTC+3:30):
+- ساعت **۰۶:۳۰ UTC** دقیقاً برابر با ساعت **۱۰:۰۰ صبح به وقت تهران** است.
+- ساعت **۱۸:۳۰ UTC** دقیقاً برابر با ساعت **۲۲:۰۰ شب (۱۰ شب) به وقت تهران** است.
 
-To queue previously failed extractions for automatic retry:
+### ج) سهمیه‌بندی و بودجه ۵۰۰ پردازش روزانه (AI Quota Allocation)
+به دلیل محدودیت توکن‌ها و واحدهای پردازشی کلادفلر (Workers AI Neuron Limits)، سامانه سقف پردازش شبانه‌روزی را روی **۵۰۰ پردازش** تنظیم کرده است:
+- **سهمیه خودکار (۸۰٪ = ۴۰۰ فراخوانی)**: به پیمایش‌های خودکار صبح و شب اختصاص دارد.
+- **سهمیه دستی (۲۰٪ = ۱۰۰ فراخوانی)**: برای جستجوهای درخواستی کاربر از طریق تب دستی داشبورد رزرو می‌شود.
+- **انتقال سهمیه مازاد در ساعت ۲۲:۰۰**: در اجرای ساعت ۱۰ شب، چنانچه تا آن لحظه کاربر هیچ جستجوی دستی انجام نداده باشد (`manual_searches = 0`)، سامانه به شکل هوشمند کل ۱۰۰ سهمیه دست‌نخورده را آزاد کرده و به اجرای شبانه اختصاص می‌دهد تا حداکثر بهره‌وری حاصل شود.
+- **تخصیص وزن‌دار به محله‌ها (`neighborhoodTarget`)**: در اجرای خودکار، محله‌هایی که آگهی کمتری در ۷ روز گذشته دارند یا زمان بیشتری از آخرین پیمایش آن‌ها گذشته است، اولویت و سهمیه بیشتری دریافت می‌کنند؛ همچنین اگر محله‌ای آگهی تازه کمتری داشته باشد، سهمیه باقیمانده به محله‌های بعدی تخصیص می‌یابد.
 
-```sh
-npm run db:retry-failed-extractions
-```
+### د) پایپ‌لاین هوش مصنوعی و مدل‌سازی مالی
+1. **استخراج حقایق با مدل Qwen 3 (30B)**:
+   متن و عنوان آگهی به مدل `@cf/qwen/qwen3-30b-a3b-fp8` ارسال و مقادیر در قالب JSON استاندارد استخراج می‌شوند.
+2. **محاسبه ودیعه معادل (Deposit Equivalent)**:
+   بر اساس استاندارد ۳ درصد در بازار مسکن ایران:
+   $$\text{Deposit Equivalent} = \text{Deposit} + \left(\text{Rent} \times \frac{100}{3}\right)$$
+   این معیار، امکان مقایسه دقیق میان آگهی‌های رهن کامل و آگهی‌های اجاره ماهانه را ممکن می‌سازد.
+3. **تفکیک خودکار هم‌خانه و اتاق اشتراکی (`hamkhane`)**:
+   آگهی‌هایی که شامل کلمات کلیدی نظیر «هم‌خانه»، «هم‌اتاقی»، «اتاق مشترک» باشند یا در تحلیل مدل `property_type = room` تشخیص داده شوند، برچسب `hamkhane` دریافت کرده و به‌طور خودکار از محاسبات میانگین و میانه قیمت مسکن مستقل حذف می‌شوند تا داده‌های بازار تحریف نشوند.
+4. **موتور ارزیابی آگهی مشکوک و جعلی (Fraud Detection)**:
+   سامانه ارزش هر مترمربع ودیعه معادل آگهی را با میانگین همان محله می‌سنجد. در صورتی که قیمت کمتر از ۶۰٪ میانگین محله باشد یا کلمات طعمه (نظیر «فوری»، «زیر قیمت»، «فرصت استثنایی») در آن به کار رفته باشد، امتیاز ریسک افزایش یافته و برچسب `suspicious` یا `fake` می‌خورد.
 
-To set the daily limit to 500 calls (400 automatic, 100 manual):
+---
 
-```sh
-npm run db:increase-daily-quota
-```
+## ۴. بررسی درستی عملکرد سامانه (Verification & Health Check)
 
-For a new database:
+عملکرد سامانه با ابزارهای تست واحد و شبیه‌سازی دیتابیس ارزیابی و اعتبارسنجی شده است:
+- **تست‌های واحد (Unit Tests)**: کلیه ۱۱ آزمون در فایل‌های `test/quota.test.js` و `test/rental-pricing.test.js` با موفقیت ۱۰۰٪ پاس می‌شوند:
+  - صحت محاسبات سهمیه ۵۰۰‌تایی (تقسیم به ۴۰۰ خودکار و ۱۰۰ دستی).
+  - صحت تبدیل ساعت به وقت محلی تهران (`Asia/Tehran`) برای مرزهای ۱۰:۰۰ و ۲۲:۰۰.
+  - آزادسازی سهمیه دستی به خودکار در ساعت ۲۲:۰۰ در صورت عدم فعالیت دستی.
+  - توزیع وزن‌دار سهمیه میان محله‌ها.
+  - صحت تبدیل ریاضی اجاره به ودیعه معادل با ضریب $100/3$.
+  - تشخیص عبارات مختلف املایی و نیم‌فاصله‌ای آگهی‌های هم‌خانه.
+  - پارس ویجت‌های خروجی API دیوار.
+- **یکپارچگی پایگاه داده**: فایل `schema.sql` و تمامی ۴ فایل مایگریشن به‌طور کامل بر روی SQLite/D1 اجرا و اعتبارسنجی شدند.
+- **کوئری‌های تحلیلی پنجره‌ای**: کوئری‌های محاسبه میانه (`ROW_NUMBER() OVER (...)`) برای ودیعه، اجاره و ودیعه بر متر مربع به صورت اتمیک و سریع اجرا می‌شوند.
 
-```sh
-npm run db:init
-npm run db:seed
-```
+---
 
-Use the corresponding `-local` commands for local D1. Run the rebuild migration only once. Do not run it again after new data has been collected unless another reset is intended.
+## ۵. راهنمای نصب، راه‌اندازی و اجرای پروژه (Setup & Execution)
 
-## Development and deployment
+### پیش‌نیازها
+1. **Node.js**: نسخه **20 به بالا** (نسخه 22 پیشنهاد می‌شود، زیرا دستور `node --test` در نسخه‌های پایین‌تر از 18 پشتیبانی نمی‌شود).
+2. **npm**: مدیر بسته‌های نود.
+3. **حساب کاربری Cloudflare** (برای استقرار نهایی، همراه با فعال‌سازی Workers, D1, Workers AI, Workflows).
 
-Requirements: Node.js 20 or newer, npm, and a Cloudflare account with Workers, D1, Workers AI, and Workflows.
+---
 
-```sh
+### گام اول: نصب پیش‌نیازها
+در پوشه ریشه پروژه دستور زیر را اجرا کنید:
+```bash
 npm install
+```
+
+---
+
+### گام دوم: اجرای تست‌های سامانه
+برای اطمینان از سلامت محاسبات سهمیه، ساعت تهران و منطق قیمت‌گذاری:
+```bash
 npm test
+```
+
+---
+
+### گام سوم: راه‌اندازی پایگاه داده محلی (Local D1)
+برای ساخت ساختار جداول و مقداردهی اولیه محله‌های پیش‌فرض در محیط لوکال:
+```bash
+# ایجاد جداول پایگاه داده در محیط محلی
+npm run db:init-local
+
+# بارگذاری محله‌های پیش‌فرض و تنظیمات در محیط محلی
+npm run db:seed-local
+```
+
+*(در صورت نیاز به اعمال مایگریشن‌ها در دیتابیس محلی قدیمی:)*
+```bash
+npm run db:migrate-neighborhoods-local
+npm run db:migrate-quota-and-labels-local
+npm run db:increase-daily-quota-local
+```
+
+---
+
+### گام چهارم: اجرای لوکال پروژه (Local Development)
+برای اجرای شبیه‌ساز سرورلس کلادفلر و مشاهده داشبورد روی سیستم خود:
+```bash
 npm run dev
 ```
+پس از اجرا، آدرس محلی (معمولاً `http://localhost:8787`) در مرورگر باز خواهد شد.
 
-Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then use `npm run deploy`. The optional `TYPESAFE_API_KEY` enables remote Jev evaluation; keep it as a Cloudflare secret.
+---
 
-## API
+### گام پنجم: استقرار بر روی کلادفلر (Deploy to Remote)
+1. ورود به حساب کلادفلر از طریق خط فرمان:
+   ```bash
+   npx wrangler login
+   ```
+2. ایجاد پایگاه داده D1 روی کلادفلر (در صورت نیاز به دیتابیس جدید):
+   ```bash
+   npx wrangler d1 create divar-housing-db
+   ```
+   شناسه پایگاه داده (`database_id`) بازگردانده شده را در فایل `wrangler.jsonc` در بخش `d1_databases` قرار دهید.
+3. ساخت جداول روی دیتابیس ابری:
+   ```bash
+   npm run db:init
+   npm run db:seed
+   ```
+4. استقرار نهایی پروژه:
+   ```bash
+   npm run deploy
+   ```
 
-- `GET /api/analytics?days=30&neighborhood=<slug>` — overall and selected-neighborhood metrics, five most active neighborhoods, and daily deposit trend.
-- `GET /api/neighborhoods?page=1&page_size=20&search=<text>&sort=count` — neighborhood statistics; `all=1` returns the full active list for selection controls.
-- `GET /api/listings?page=1&page_size=20&neighborhood=<slug>&label=suspicious&search=<text>` — searchable, filtered, paginated listings.
-- `POST /api/manual-runs` — start a manual search with `{ "neighborhood": "<slug>", "count": 10 }`.
-- `GET /api/manual-runs/<id>` — inspect manual-run status.
-- `GET /api/quota` — daily AI calls, automatic/manual budgets, and remaining capacity.
-- `GET /api/settings` and `POST /api/settings` — read or update selected automatic neighborhoods and analysis thresholds.
-- `GET /api/logs?limit=100` — recent service logs.
-- `POST /api/discover-neighborhoods` — explicitly refresh the neighborhood list.
+---
 
-## Operational notes
+## ۶. مستندات رابط کاربری و وب‌سرویس‌ها (Dashboard & API)
 
-The dashboard has no authentication. Keep its deployed URL private; an unprotected URL is not access control. Divar may block automated requests or change its internal endpoints. Check the applicable terms and local requirements before operating a scraper. Fake-price labels are review signals, not definitive claims about advertisers.
+### داشبورد مدیریتی (تحت آدرس ریشه `/`)
+- **تب نمای کلی (Overview)**: کارت‌های ۵ محله برتر، فیلتر و انتخاب هر محله، نمایش میانگین و میانه ودیعه، میانه ودیعه بر متر مربع، نمودار ستونی حجم آگهی‌ها، نمودار خطی روند روزانه ودیعه، و جدول داده‌ای مرتب‌شونده و دارای صفحه‌بندی.
+- **تب آگهی‌ها (Listings)**: مشاهده کارت‌های آگهی به همراه عکس، قیمت، متراژ، تعداد خواب، وضعیت سلامت آگهی (نشان‌های رنگی: معمولی، مشکوک، جعلی، هم‌خانه) و لینک مستقیم به دیوار.
+- **تب دریافت دستی (Manual)**: امکان انتخاب محله و ثبت سفارش دریافت ۱ تا ۵۰۰ آگهی به صورت دستی به همراه رهگیری زنده وضعیت پیشرفت در صف.
+- **تب تنظیمات (Settings)**: ویرایش سقف سهمیه روزانه، آستانه‌های ریسک، کلمات کلیدی طعمه و انتخاب محله‌های پیمایش خودکار با برچسب‌های تعاملی.
+  > **نکته امنیتی**: ذخیره تغییرات در تب تنظیمات نیازمند **رمز عبور** است. رمز پیش‌فرض تنظیمات در سامانه: **`1311`** می‌باشد.
+- **تب گزارش‌ها (Logs)**: نمایش لاگ‌های سیستمی و ارتباط با دیوار و هوش مصنوعی با قابلیت فیلتر بر اساس سرویس و وضعیت خطا یا موفقیت.
+
+### مستندات اندپوینت‌های API
+
+| مسیر (Path) | متد | شرح عملکرد |
+|---|---|---|
+| `GET /api/analytics` | `GET` | دریافت خلاصه آماری، ۵ محله پرآگهی و روند روزانه (پارامترهای اختیاری: `days=30` و `neighborhood=<slug>`) |
+| `GET /api/neighborhoods` | `GET` | دریافت آمار محله‌ها با قابلیت جستجو، مرتب‌سازی و صفحه‌بندی (`page`, `page_size`, `search`, `sort`) |
+| `GET /api/listings` | `GET` | لیست آگهی‌ها همراه با فیلتر محله، برچسب (`label`)، کلمه جستجو و صفحه‌بندی |
+| `POST /api/manual-runs` | `POST` | ثبت درخواست استخراج دستی با بدنه `{"neighborhood": "<slug>", "count": 10}` |
+| `GET /api/manual-runs/:id` | `GET` | دریافت وضعیت پیشرفت فرایند استخراج دستی با شناسه |
+| `GET /api/quota` | `GET` | استعلام وضعیت مصرف سهمیه ۵۰۰تایی، سهمیه خودکار و دستی مصرف‌شده و باقیمانده |
+| `GET /api/settings` | `GET` | دریافت تنظیمات جاری سیستم |
+| `POST /api/settings` | `POST` | به‌روزرسانی تنظیمات سیستم (نیازمند فیلد `settings_password: "1311"`) |
+| `GET /api/logs` | `GET` | دریافت لاگ‌های سیستمی (`service`, `status`, `limit`) |
+| `POST /api/discover-neighborhoods` | `POST` | همگام‌سازی اجباری و لحظه‌ای فهرست محله‌ها از سرورهای دیوار |
+| `POST /api/refresh` | `POST` | فراخوانی دستی گردش‌کار (Workflow) پیمایش خودکار آگهی‌ها |
+
+---
+
+## ۷. ساختار فایل‌های پروژه
+
+```text
+divar-housing-finder/
+├── migrations/                                # اسکریپت‌های مهاجرت ساختار دیتابیس
+│   ├── 0001_neighborhood_first_rebuild.sql  # بازسازی پایگاه داده مبتنی بر محله
+│   ├── 0002_daily_quota_and_listing_reclassification.sql # رده‌بندی هم‌خانه و سهمیه
+│   ├── 0003_retry_failed_extractions.sql     # بازنشانی آگهی‌های ناموفق
+│   └── 0004_increase_daily_quota_to_500.sql  # افزایش سقف سهمیه به ۵۰۰
+├── seed/
+│   └── seed-neighborhoods.sql                 # داده‌های اولیه محله‌ها و تنظیمات
+├── src/
+│   ├── index.js                               # نقطه ورود ورکر، مسیریابی API و تریگر کرون
+│   ├── workflow.js                            # کلاس Cloudflare Workflow برای پیمایش و هوش مصنوعی
+│   ├── scraper.js                             # توابع دریافت داده و ارتباط با API دیوار
+│   ├── extractor.js                           # فراخوانی مدل زبانی Workers AI (Qwen)
+│   ├── jev.js                                 # موتور ارزیابی قیمت مشکوک و غیرواقعی
+│   ├── quota.js                               # مدیریت محاسبات سهمیه ۵۰۰‌تایی و ساعت تهران
+│   ├── rental-pricing.js                      # فرمول‌های تبدیل رهن و اجاره به ودیعه معادل
+│   ├── listing-classification.js              # الگوهای تشخیص آگهی‌های هم‌خانه و اشتراکی
+│   ├── neighborhood-discovery.js              # دریافت و همگام‌سازی محله‌های تهران از نقشه دیوار
+│   ├── dashboard.js                           # رابط کاربری وب فارسی و کلاینت Chart.js
+│   ├── constants.js                           # ثوابت سهمیه و سیستم
+│   └── utils.js                               # توابع کمکی، نرمال‌سازی اعداد فارسی و لاگ‌گذاری
+├── test/
+│   ├── quota.test.js                          # تست‌های واحد منطق سهمیه و زمان‌بندی
+│   └── rental-pricing.test.js                 # تست‌های واحد قیمت‌گذاری و تطبیق متن
+├── package.json                               # مشخصات پروژه و اسکریپت‌های npm
+├── schema.sql                                 # ساختار کامل جداول پایگاه داده D1
+├── wrangler.jsonc                             # پیکربندی سرورلس، دیتابیس، مدل هوش مصنوعی و کرون
+├── README.md                                  # فایل راهنمای اصلی پروژه (فارسی)
+├── README_EN.md                               # نسخه پیشین انگلیسی راهنما
+└── DOCUMENTATION_FA.md                        # گزارش جامع فنی و دانشگاهی سامانه
+```
+
+---
+
+## ۸. نکات حقوقی و عملیاتی
+
+- **حفظ حریم خصوصی و امنیت**: این سامانه به طور پیش‌فرض روی داشبورد احراز هویت کاربری ندارد؛ بنابراین در صورت استقرار عمومی، دسترسی به نشانی آن را محدود نگه دارید. بخش تغییر تنظیمات دارای رمز عبور پیش‌فرض است.
+- **مسئولیت استخراج داده**: وب‌سایت دیوار ممکن است ساختار پاسخ‌های داخلی API را تغییر دهد یا درخواست‌های پرشمار خودکار را محدود کند. این سامانه با رعایت فاصله‌گذاری مناسب بین درخواست‌ها (`step.sleep`) و محدودیت ۵۰۰ عددی، بار بسیار سبکی روی سرورها ایجاد می‌کند.
+- **ماهیت برچسب‌های مشکوک/فیک**: برچسب‌های جعلی و مشکوک جنبه سیگنال‌های کمکی برای بازبینی کارشناس دارند و به منزله ادعای قطعی در مورد قصد آگهی‌دهنده نیستند.
