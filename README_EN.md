@@ -22,7 +22,7 @@ The daily limit is a count of Workers AI processing calls, not a count of model 
 
 ## Database and migration
 
-The schema contains neighborhoods, listings, daily AI usage, manual-run status, settings, system_state, and request logs. The old region hierarchy, mapping data, scrape state, and listings are removed by the rebuild migration.
+The schema contains neighborhoods, listings, daily AI usage, manual-run status, settings, system_state, and request logs, plus two precomputed analytics caches: `neighborhood_stats` (per neighborhood and window, with a synthetic `neighborhood_id = 0` city row) and `daily_stats`. The old region hierarchy, mapping data, scrape state, and listings are removed by the rebuild migration.
 
 **`0001_neighborhood_first_rebuild.sql` is destructive:** it drops the old listing and location tables and starts with an empty listings table. Back up a database before applying it. The migration seeds the six resolvable default Divar neighborhoods and default automatic selection. A separate entry for “بلوار فردوس” is not present in Divar's Tehran neighborhood list; the closest matching place is “فردوس”, which is already selected, so it is not duplicated.
 
@@ -31,6 +31,14 @@ The schema contains neighborhoods, listings, daily AI usage, manual-run status, 
 `0003_retry_failed_extractions.sql` re-queues prior extraction failures for automatic retry; apply it once after the daily capacity is available.
 
 `0004_increase_daily_quota_to_500.sql` sets the saved daily limit to 500 calls, split 400 automatic and 100 manual by the application. Workers AI's account-level neuron quota is separate and remains enforced by Cloudflare.
+
+`0005_precomputed_stats.sql` adds the `neighborhood_stats` and `daily_stats` cache tables plus the `stats_computed_at` marker. It is additive and safe on a live database. Once applied, the end-of-workflow `refresh-stats` step keeps the caches current; endpoints fall back to live SQL until the marker exists and for windows other than 30 days, so deploying without the migration does not break the dashboard. Apply it before the first deployment that depends on the cache:
+
+```sh
+npm run db:migrate-precomputed-stats
+```
+
+The cache exists because live dashboard queries repeatedly scanned the 30-day `listings` window and exceeded the D1 free-tier limit of 5,000,000 rows read per day (about 8.5M observed), which surfaced as `code 7500` and HTTP 500 responses. Cached reads now touch roughly 20 rows.
 
 For an existing database:
 
@@ -75,11 +83,18 @@ npm test
 npm run dev
 ```
 
-Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then use `npm run deploy`. The optional `TYPESAFE_API_KEY` enables remote Jev evaluation; keep it as a Cloudflare secret.
+Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then use `npm run deploy`. The repository is connected to Cloudflare, so a push to the main branch also deploys automatically; migrations are not run automatically. The optional `TYPESAFE_API_KEY` enables remote Jev evaluation; keep it as a Cloudflare secret.
+
+## Documentation
+
+- `README.md` — Persian user guide, dashboard control reference, flow diagrams, and API notes.
+- `DOCUMENTATION_FA.md` — Persian analysis and design document (business domain, data model, data dictionary, read/write analysis, verification, setup).
+- `docs/screenshots/` — dashboard screenshots generated offline from the real dashboard HTML and mock data by `node scripts/capture-screenshots.js`.
 
 ## API
 
-- `GET /api/analytics?days=30&neighborhood=<slug>` — overall and selected-neighborhood metrics, five most active neighborhoods, and daily deposit trend.
+- `GET /api/analytics?days=30&neighborhood=<slug>` — overall and selected-neighborhood metrics, five most active neighborhoods, and daily deposit trend; cached responses include `stats_computed_at`.
+- `GET /api/stats` — city-wide 30-day summary using the same `overall` shape as analytics.
 - `GET /api/neighborhoods?page=1&page_size=20&search=<text>&sort=count` — neighborhood statistics; `all=1` returns the full active list for selection controls.
 - `GET /api/listings?page=1&page_size=20&neighborhood=<slug>&label=suspicious&search=<text>` — searchable, filtered, paginated listings.
 - `POST /api/manual-runs` — start a manual search with `{ "neighborhood": "<slug>", "count": 10 }`.
@@ -88,6 +103,7 @@ Configure the D1 database ID in `wrangler.jsonc`, authenticate Wrangler, then us
 - `GET /api/settings` and `POST /api/settings` — read or update selected automatic neighborhoods and analysis thresholds (password required: `1311`).
 - `GET /api/logs?limit=100` — recent service logs.
 - `POST /api/discover-neighborhoods` — explicitly refresh the neighborhood list.
+- `POST /api/refresh` — start the automatic scraping workflow on demand.
 
 ## Operational notes
 

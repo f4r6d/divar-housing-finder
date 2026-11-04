@@ -32,6 +32,7 @@
 flowchart TD
     classDef core fill:#eef6ff,stroke:#0071e3,stroke-width:2px,color:#0f172a;
     classDef ops fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#0f172a;
+    classDef analytics fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#0f172a;
     classDef sys fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
 
     subgraph Core ["🔹 هسته اصلی داده‌های مسکن (Core Data)"]
@@ -48,6 +49,13 @@ flowchart TD
         DAU["<b>daily_ai_usage (سهمیه روزانه هوش مصنوعی)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 usage_date: TEXT (PK - YYYY-MM-DD)<br/>🔢 total_calls: INTEGER (سقف ۵۰۰)<br/>🤖 auto_calls: INTEGER (سهمیه خودکار تا ۴۰۰)<br/>👤 manual_calls: INTEGER (سهمیه دستی تا ۱۰۰)<br/>🔍 manual_searches: INTEGER<br/>🔄 updated_at: TEXT"]:::ops
     end
 
+    subgraph Analytics ["📊 لایه آمار پیش‌محاسبه‌شده (Analytics Cache)"]
+        direction TB
+        NS["<b>neighborhood_stats (آمار محله)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 (neighborhood_id, window_days) PK<br/>🔗 neighborhood_id (FK / 0 = کل شهر)<br/>📅 window_days: INTEGER (30 یا 0=همه)<br/>🔢 listing_count / fake_count<br/>🟠 suspicious_count / hamkhane_count<br/>⏳ pending_count<br/>💰 avg_deposit | avg_rent | avg_deposit_per_sqm<br/>📈 median_deposit | median_rent | median_deposit_per_sqm<br/>🕒 computed_at: TEXT"]:::analytics
+
+        DS["<b>daily_stats (روند روزانه)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 day: TEXT (PK - YYYY-MM-DD)<br/>🔢 listing_count: INTEGER<br/>📈 median_deposit: REAL<br/>🕒 computed_at: TEXT"]:::analytics
+    end
+
     subgraph ConfigSystem ["📋 پیکربندی و لاگ‌های سیستم (System & Settings)"]
         direction TB
         S["<b>settings (تنظیمات سامانه)</b><br/>━━━━━━━━━━━━━━━━━━━━━━<br/>🔑 key: TEXT (PK)<br/>🔹 value: TEXT<br/>🔄 updated_at: TEXT"]:::sys
@@ -59,97 +67,41 @@ flowchart TD
 
     N -->|"1 : N (هر محله شامل چندین آگهی)"| L
     N -->|"1 : N (هدف درخواست‌های جستجوی دستی)"| MR
+    N -.->|"1 : 0..1 (یک ردیف برای هر بازه)"| NS
+    L -.->|"تجمیع بر اساس تاریخ (بدون FK)"| DS
 ```
+
+> نکته: جدول‌های `neighborhood_stats` و `daily_stats` کش تحلیلی هستند و داده‌ی جدید تولید نمی‌کنند؛ در پایان هر اجرای ورک‌فلو از روی `listings` بازسازی می‌شوند. ردیف با `neighborhood_id = 0` در `neighborhood_stats` یک ردیف مصنوعی «کل شهر» است و عمداً کلید خارجی ندارد.
 
 <details>
-<summary><b>مشاهده دیاگرام با استاندارد متنی Mermaid Crow's Foot ER</b> (کلیک کنید)</summary>
+<summary><b>روابط جداول پایگاه داده (کلیک کنید)</b></summary>
 
-```mermaid
-erDiagram
-    neighborhoods ||--o{ listings : has
-    neighborhoods ||--o{ manual_runs : targets
+| جدول مبدأ | نوع رابطه | جدول مقصد | توضیح |
+|---|---|---|---|
+| `neighborhoods` | یک به چند (1:N) | `listings` | هر محله شامل چندین آگهی است |
+| `neighborhoods` | یک به چند (1:N) | `manual_runs` | هر محله می‌تواند چندین درخواست دستی داشته باشد |
+| `neighborhoods` | یک به یک (1:0..1) | `neighborhood_stats` | برای هر محله در هر بازه (`30` و `0`) یک ردیف تجمیعی |
+| `listings` | تجمیع منطقی (بدون FK) | `daily_stats` | یک ردیف به ازای هر روز دارای آگهی |
 
-    neighborhoods {
-        INTEGER id PK
-        TEXT divar_id
-        TEXT slug
-        TEXT name_fa
-        TEXT city_slug
-        INTEGER is_active
-        TEXT last_scraped_at
-        TEXT created_at
-    }
+**ساختار کامل ستون‌های هر جدول:**
 
-    listings {
-        INTEGER id PK
-        TEXT divar_token
-        TEXT url
-        TEXT title
-        INTEGER price_toman
-        INTEGER rent_toman
-        INTEGER deposit_toman
-        INTEGER deposit_equivalent_toman
-        INTEGER rent_deposit_flexible
-        REAL size_m2
-        INTEGER rooms
-        INTEGER neighborhood_id FK
-        TEXT description
-        TEXT image_url
-        TEXT extracted_data
-        INTEGER extraction_done
-        TEXT jev_result
-        REAL jev_score
-        INTEGER jev_done
-        TEXT fake_label
-        REAL fake_score
-        TEXT fake_reason
-        TEXT scrape_source
-        TEXT scraped_at
-        TEXT updated_at
-    }
+**`neighborhoods`:** `id` PK, `divar_id` UNIQUE, `slug` UNIQUE, `name_fa`, `city_slug`, `is_active`, `last_scraped_at`, `created_at`
 
-    manual_runs {
-        TEXT id PK
-        INTEGER neighborhood_id FK
-        INTEGER requested_count
-        INTEGER fetched_count
-        TEXT status
-        TEXT error
-        TEXT started_at
-        TEXT finished_at
-    }
+**`listings`:** `id` PK, `divar_token` UNIQUE, `neighborhood_id` FK, `url`, `title`, `price_toman`, `rent_toman`, `deposit_toman`, `deposit_equivalent_toman`, `rent_deposit_flexible`, `size_m2`, `rooms`, `description`, `image_url`, `extracted_data`, `extraction_done`, `jev_result`, `jev_score`, `jev_done`, `fake_label`, `fake_score`, `fake_reason`, `scrape_source`, `scraped_at`, `updated_at`
 
-    daily_ai_usage {
-        TEXT usage_date PK
-        INTEGER total_calls
-        INTEGER auto_calls
-        INTEGER manual_calls
-        INTEGER manual_searches
-        TEXT updated_at
-    }
+**`manual_runs`:** `id` PK (UUID), `neighborhood_id` FK, `requested_count`, `fetched_count`, `status`, `error`, `started_at`, `finished_at`
 
-    settings {
-        TEXT key PK
-        TEXT value
-        TEXT updated_at
-    }
+**`daily_ai_usage`:** `usage_date` PK, `total_calls`, `auto_calls`, `manual_calls`, `manual_searches`, `updated_at`
 
-    system_state {
-        TEXT key PK
-        TEXT value
-        TEXT updated_at
-    }
+**`settings`:** `key` PK, `value`, `updated_at`
 
-    request_logs {
-        INTEGER id PK
-        TEXT service
-        TEXT url
-        INTEGER status
-        TEXT error
-        TEXT response_snippet
-        TEXT created_at
-    }
-```
+**`system_state`:** `key` PK, `value`, `updated_at`
+
+**`request_logs`:** `id` PK, `service`, `url`, `status`, `error`, `response_snippet`, `created_at`
+
+**`neighborhood_stats`:** `(neighborhood_id, window_days)` PK, `listing_count`, `fake_count`, `suspicious_count`, `hamkhane_count`, `pending_count`, `avg_deposit`, `avg_rent`, `avg_deposit_per_sqm`, `median_deposit`, `median_rent`, `median_deposit_per_sqm`, `computed_at` — بدون FK؛ `neighborhood_id = 0` ردیف سراسری شهر است.
+
+**`daily_stats`:** `day` PK, `listing_count`, `median_deposit`, `computed_at`
 
 </details>
 
@@ -169,6 +121,10 @@ erDiagram
    - نگهداری قفل‌های هم‌زمانی اجرای ورک‌فلو (`workflow_running`)، زمان آخرین بروزرسانی لیست محله‌ها (`neighborhood_discovery_last_run`) و وضعیت تعلیق احتمالی سهمیه کلادفلر (`ai_quota_until`).
 7. **`request_logs` (لاگ‌های سیستمی)**:
    - لاگ تمام ارتباطات خارجی شبکه (دیوار، ورکر هوش مصنوعی، سرویس Jev و خطاهای سیستمی) با ایندکس زمانی برای عیب‌یابی سریع.
+8. **`neighborhood_stats` (کش آمار محله)**:
+   - نتیجهٔ تجمیع ۳۰ روزه و تجمیع کل‌زمانی (`window_days = 0`) برای هر محله و یک ردیف سراسری شهر (`neighborhood_id = 0`). شامل شمارش آگهی/جعلی/مشکوک/هم‌خانه/درانتظار و میانگین و میانهٔ ودیعه، اجاره و ودیعهٔ هر متر است. این جدول در پایان هر اجرای ورک‌فلو به‌صورت اتمیک بازسازی می‌شود تا کوئری‌های داشبورد به‌جای اسکن جدول `listings` فقط چند ده ردیف بخوانند.
+9. **`daily_stats` (روند روزانه)**:
+   - میانهٔ ودیعه و تعداد آگهی به تفکیک روز برای ۳۰ روز اخیر؛ منبع نمودار «روند روزانهٔ میانهٔ ودیعه» و جایگزین محاسبهٔ پنجره‌ای روی کل `listings` در هر بار بارگذاری داشبورد.
 
 ---
 
@@ -205,6 +161,18 @@ erDiagram
 4. **موتور ارزیابی آگهی مشکوک و جعلی (Fraud Detection)**:
    سامانه ارزش هر مترمربع ودیعه معادل آگهی را با میانگین همان محله می‌سنجد. در صورتی که قیمت کمتر از ۶۰٪ میانگین محله باشد یا کلمات طعمه (نظیر «فوری»، «زیر قیمت»، «فرصت استثنایی») در آن به کار رفته باشد، امتیاز ریسک افزایش یافته و برچسب `suspicious` یا `fake` می‌خورد.
 
+### هـ) پیش‌محاسبهٔ آمار تحلیلی و کنترل سهمیهٔ خواندن D1
+داشبورد در هر بارگذاری چند تحلیل تجمیعی (میانگین، میانه، میانهٔ هر متر، روند روزانه) می‌خواست. اجرای این تحلیل‌ها با توابع پنجره‌ای روی جدول `listings` باعث می‌شد هر بازدید چندین بار کل بازهٔ ۳۰ روزه اسکن شود. در پلن رایگان D1 سقف **۵٬۰۰۰٬۰۰۰ ردیف خوانده‌شده در روز** وجود دارد و مشاهده شد مصرف روزانه به حدود **۸٫۵ میلیون ردیف** رسیده و خطای `code 7500` تمام درخواست‌های متکی به `listings` را ۵۰۰ می‌کرد. راه‌حل پیاده‌شده:
+
+1. **نوشتن به‌جای خواندن**: در پایان هر اجرای ورک‌فلو، مرحلهٔ `refresh-stats` تابع `refreshAggregates` را صدا می‌زند. این تابع ۸ دستور (پاک‌سازی و بازسازی آمار محله، ردیف کل شهر، آمار کل‌زمانی، روند روزانه و ثبت نشانگر `stats_computed_at`) را در یک `batch` اتمیک اجرا می‌کند؛ بنابراین آمار هرگز نیمه‌کاره دیده نمی‌شود.
+2. **میانهٔ دقیق در SQL**: میانه با `ROW_NUMBER() OVER (PARTITION BY ...)` و `COUNT(*) OVER ()` و میانگین دو ردیف میانی محاسبه می‌شود (بدون انتقال ردیف‌ها به جاوااسکریپت).
+3. **مسیر خواندن کش**: اگر نشانگر `stats_computed_at` موجود باشد و بازهٔ درخواستی ۳۰ روز باشد، اندپوینت‌های `/api/neighborhoods`، `/api/analytics`، `/api/stats` و شمارش کل `/api/listings` از جدول‌های کش می‌خوانند (حدود ۲۰ ردیف به‌جای هزاران ردیف).
+4. **بازگشت خودکار به مسیر زنده**: برای بازه‌های دیگر (مثلاً ۷ یا ۹۰ روز) یا پیش از نخستین اجرای ورک‌فلو، همان اندپوینت‌ها به کوئری زندهٔ SQL برمی‌گردند؛ پس رفتار API تغییر نمی‌کند.
+5. **هم‌ارزی معنایی**: آگهی‌های `hamkhane` در هر دو مسیر از شمارش و میانه‌ها کنار گذاشته می‌شوند و شمارش آن‌ها جداگانه گزارش می‌شود.
+6. **خطای غیرمهلک**: اگر مرحلهٔ `refresh-stats` شکست بخورد، فقط در `request_logs` ثبت می‌شود و اجرای موفق دریافت آگهی را ناموفق نمی‌کند؛ داشبورد در این حالت روی مسیر زنده کار می‌کند.
+
+نتیجهٔ سنجش محلی: خروجی مسیر کش و مسیر زنده برای `/api/analytics`، `/api/neighborhoods` (شامل جست‌وجو، مرتب‌سازی و صفحه‌بندی) و `/api/listings` کاملاً یکسان بود و تنها `stats_computed_at` در مسیر زنده `null` است.
+
 ---
 
 ## ۴. بررسی درستی عملکرد سامانه بر اساس لاگ‌ها و آزمون‌های واقعی (System Verification & Logs Analysis)
@@ -235,6 +203,12 @@ erDiagram
 - صحت فرمول مالی تبدیل اجاره به رهن با ضریب $100/3$.
 - مقاومت الگوریتم شناسایی هم‌خانه در برابر انواع فاصله‌ها و نیم‌فاصله‌های فارسی.
 - مدیریت خطاهای گذرای هوش مصنوعی و عدم تخریب اطلاعات آگهی‌ها.
+
+### د) تحلیل خطای سهمیهٔ خواندن D1 و اعتبارسنجی کش تحلیلی
+- **سنجش**: `wrangler d1 info` مقدار `rows_read_24h ≈ 8.5M` را نشان داد، در حالی که سقف روز رایگان ۵ میلیون ردیف است. نتیجه: کوئری کوچکی مثل `SELECT COUNT(*) FROM settings` موفق بود اما هر مسیر وابسته به `listings` خطای `code 7500` می‌داد و ۵۰۰ برمی‌گرداند.
+- **ریشه**: هر بارگذاری داشبورد چند کوئری تحلیلی با `GROUP BY` و توابع پنجره‌ای روی بازهٔ ۳۰ روزه اجرا می‌کرد و هر کوئری کل بازه را دوباره می‌خواند.
+- **اصلاح**: آمار در پایان هر اجرای ورک‌فلو یک‌بار محاسبه و در `neighborhood_stats`/`daily_stats` ذخیره می‌شود؛ خواندن داشبورد به چند ده ردیف کاهش می‌یابد و برای بازه‌های غیر ۳۰ روز مسیر زنده باقی می‌ماند.
+- **اعتبارسنجی**: آمار تولیدشده با میانه‌های محاسبه‌شدهٔ مستقل مطابقت داشت؛ مقایسهٔ A/B مسیر کش و مسیر زنده در `/api/analytics`، `/api/neighborhoods` (با جست‌وجو/مرتب‌سازی/صفحه‌بندی) و `/api/listings` یکسان بود؛ همهٔ اندپوینت‌ها روی D1 محلی ۲۰۰ برگرداندند و ۱۷ آزمون پروژه پاس شد.
 
 ---
 
@@ -278,6 +252,7 @@ npm run db:seed-local
 npm run db:migrate-neighborhoods-local
 npm run db:migrate-quota-and-labels-local
 npm run db:increase-daily-quota-local
+npm run db:migrate-precomputed-stats-local
 ```
 
 ---
@@ -306,10 +281,15 @@ npm run dev
    npm run db:init
    npm run db:seed
    ```
+   برای دیتابیس موجود، فقط مایگریشن افزایشی آمار را یک‌بار اجرا کنید:
+   ```bash
+   npm run db:migrate-precomputed-stats
+   ```
 4. استقرار نهایی پروژه:
    ```bash
    npm run deploy
    ```
+   > این پروژه به Git متصل است و با هر `git push` روی شاخهٔ اصلی به‌صورت خودکار روی Cloudflare دیپلوی می‌شود. مایگریشن‌ها خودکار اجرا نمی‌شوند؛ پیش از نخستین دیپلویِ نسخه‌ای که به جدول‌های آمار وابسته است، `db:migrate-precomputed-stats` را روی دیتابیس ریموت اجرا کنید. حتی بدون آن، اندپوینت‌ها به‌صورت خودکار به مسیر زنده برمی‌گردند و خطا نمی‌دهند.
 
 ---
 
@@ -323,11 +303,203 @@ npm run dev
   > **نکته امنیتی**: ذخیره تغییرات در تب تنظیمات نیازمند **رمز عبور** است. رمز پیش‌فرض تنظیمات در سامانه: **`1311`** می‌باشد.
 - **تب گزارش‌ها (Logs)**: نمایش لاگ‌های سیستمی و ارتباط با دیوار و هوش مصنوعی با قابلیت فیلتر بر اساس سرویس و وضعیت خطا یا موفقیت.
 
+### تصاویر رابط کاربری
+تصاویر زیر با اسکریپت `scripts/capture-screenshots.js` از همان HTML داشبورد و با دادهٔ نمونه تولید می‌شوند (بدون تماس با دیتابیس یا سرویس‌های بیرونی):
+
+| نمای کلی (نمودارها و جدول) | انتخاب یک محله |
+|---|---|
+| ![نمای کلی داشبورد](docs/screenshots/01-overview.png) | ![نمای کلی با محلهٔ انتخاب‌شده](docs/screenshots/06-overview-selected.png) |
+
+| تب آگهی‌ها | فیلتر آگهی‌های جعلی |
+|---|---|
+| ![تب آگهی‌ها](docs/screenshots/02-listings.png) | ![آگهی‌های جعلی](docs/screenshots/07-listings-filtered.png) |
+
+| دریافت دستی | تنظیمات | گزارش‌ها |
+|---|---|---|
+| ![دریافت دستی](docs/screenshots/03-manual-run.png) | ![تنظیمات](docs/screenshots/04-settings.png) | ![گزارش‌ها](docs/screenshots/05-logs.png) |
+
+برای بازتولید تصاویر:
+```bash
+node scripts/capture-screenshots.js
+```
+این اسکریپت به `google-chrome` (حالت headless) نیاز دارد و تصاویر را در `docs/screenshots/` بازنویسی می‌کند. نمودارها با یک رندرر Canvas محلی کشیده می‌شوند تا تصاویر بدون اینترنت و به‌صورت تکرارپذیر ساخته شوند.
+
+### راهنمای کامل دکمه‌ها و کنترل‌های داشبورد
+داشبورد یک صفحهٔ RTL است و داده‌ها را از همان APIهای مستندشده می‌خواند. جدول‌های زیر تمام کنترل‌های تعاملی را شرح می‌دهند:
+
+#### کنترل‌های سراسری
+
+| کنترل | شناسه | رفتار | درخواست‌های شبکه |
+|---|---|---|---|
+| دکمهٔ «به‌روزرسانی آمار» | `#refresh` | در حین اجرا غیرفعال و متن آن «در حال به‌روزرسانی…» می‌شود؛ ابتدا یک اجرای ورک‌فلو صف می‌کند و سپس خلاصه، جدول و سهمیه را دوباره می‌خواند | `POST /api/refresh` سپس `GET /api/neighborhoods?all=1`، `GET /api/analytics?days=30`، `GET /api/neighborhoods?...`، `GET /api/quota` |
+| تب‌ها | `.tab[data-tab]` | جابه‌جایی بین پنج پنل بدون بارگذاری مجدد صفحه؛ تب «آگهی‌ها» فهرست، تب «گزارش‌ها» لاگ‌ها و تب «دریافت دستی» سهمیه را تازه می‌کند | `GET /api/listings`، `GET /api/logs`، `GET /api/quota` |
+
+#### تب «نمای کلی»
+
+| کنترل | شناسه | رفتار | درخواست |
+|---|---|---|---|
+| کارت‌های پنج محلهٔ برتر | `.top-card` | کلیک روی کارت، همان محله را انتخاب و آمار بخش «نمایش آمار محله» را به‌روز می‌کند | `GET /api/analytics?days=30&neighborhood=<slug>` |
+| انتخاب محله | `#overview-neighborhood` + `#neighborhood-options` | جست‌وجوی نام فارسی از فهرست محله‌های دارای آگهی؛ تغییر مقدار، محله را انتخاب یا در صورت خالی بودن، «همهٔ محله‌ها» را نمایش می‌دهد | `GET /api/analytics?days=30[&neighborhood=<slug>]` |
+| جست‌وجوی جدول | `#neighborhood-search` | جست‌وجوی سرور-side روی نام محله و بازگشت به صفحهٔ اول | `GET /api/neighborhoods?search=...&page=1` |
+| مرتب‌سازی جدول | `#neighborhood-sort` | گزینه‌ها: تعداد آگهی، میانگین ودیعه، میانهٔ ودیعه، میانهٔ ودیعه به‌ازای متر، تعداد جعلی، نام محله | `GET /api/neighborhoods?sort=...` |
+| ردیف جدول | `tr.table-row` | کلیک روی ردیف، محله را انتخاب کرده و به تب «آگهی‌ها» با فیلتر همان محله می‌رود | `GET /api/analytics?...` و `GET /api/listings?neighborhood=<slug>` |
+| صفحهٔ قبل/بعد جدول | `#table-prev` / `#table-next` | صفحه‌بندی ۲۰ ردیفی؛ در ابتدا/انتهای فهرست غیرفعال می‌شوند | `GET /api/neighborhoods?page=...` |
+| نمودارها | `#count-chart` / `#deposit-chart` | خودکار از دادهٔ همان پاسخ analytics رسم می‌شوند (ستونی: تعداد آگهی محله‌ها؛ خطی: میانهٔ ودیعهٔ روزانه) | — |
+
+#### تب «آگهی‌ها»
+
+| کنترل | شناسه | رفتار | درخواست |
+|---|---|---|---|
+| جست‌وجو | `#listing-search` | جست‌وجو در عنوان و توضیحات و بازگشت به صفحهٔ اول | `GET /api/listings?search=...` |
+| فیلتر محله | `#listing-neighborhood` | «همهٔ محله‌ها» یا یک محلهٔ فعال | `GET /api/listings?neighborhood=<slug>` |
+| فیلتر وضعیت | `#listing-label` | همه، معمولی (`real`)، مشکوک (`suspicious`)، جعلی (`fake`)، هم‌خانه (`hamkhane`)، در انتظار بررسی (`pending` → `extraction_done = 0`) | `GET /api/listings?label=...` |
+| صفحهٔ قبل/بعد | `#listing-prev` / `#listing-next` | صفحه‌بندی ۲۰تایی کارت‌ها | `GET /api/listings?page=...` |
+| «مشاهدهٔ آگهی» | لینک داخل کارت | باز کردن صفحهٔ آگهی در دیوار در تب جدید (`target="_blank"`, `rel="noopener noreferrer"`) | — |
+
+#### تب «دریافت دستی»
+
+| کنترل | شناسه | رفتار | درخواست |
+|---|---|---|---|
+| انتخاب محله | `#manual-neighborhood` + `#manual-options` | فقط محله‌های فعال؛ ورودی نامعتبر با پیام خطا رد می‌شود | — |
+| تعداد درخواستی | `#manual-count` | عدد صحیح بین ۱ تا ۵۰۰ | — |
+| دکمهٔ «شروع دریافت» | `#manual-start` | اعتبارسنجی، ثبت درخواست، سپس نظرسنجی وضعیت هر ۳ ثانیه تا رسیدن به وضعیت پایانی؛ پس از پایان، خلاصه/جدول/آگهی‌ها تازه می‌شوند | `POST /api/manual-runs` و `GET /api/manual-runs/<id>` |
+| پنل سهمیه | `#quota-panel` | نمایش مصرف امروز، سهمیهٔ خودکار/دستی و ظرفیت باقی‌مانده؛ در صورت اتمام سهمیه پیام هشدار | `GET /api/quota` |
+| ناحیهٔ وضعیت | `#manual-status` | وضعیت فارسی اجرا، تعداد درخواستی/دریافت‌شده و متن خطا در صورت شکست | — |
+
+وضعیت‌های اجرای دستی: `queued` (در صف) ← `running` (در حال اجرا) ← `scraped` (در حال تحلیل) ← `complete` (کامل)؛ در خطا `failed` و در اتمام سهمیه `quota_exhausted`.
+
+#### تب «تنظیمات»
+
+| کنترل | شناسه | رفتار | درخواست |
+|---|---|---|---|
+| سقف پردازش روزانه | `#daily-limit` | عدد ۳ تا ۵۰۰؛ ۸۰٪ خودکار و ۲۰٪ دستی تقسیم می‌شود | — |
+| آستانهٔ مشکوک / جعلی | `#fake-threshold` / `#high-threshold` | عدد بین ۰ و ۱ | — |
+| عبارت‌های هشدار | `#bait-keywords` | هر عبارت در یک خط | — |
+| افزودن محله به دریافت خودکار | `#auto-search` + `#auto-suggestions` | پیشنهاد تا ۱۵ محلهٔ انتخاب‌نشده؛ کلیک روی پیشنهاد، برچسب اضافه می‌کند | — |
+| برچسب محله‌های خودکار | `#auto-selected .chip` | دکمهٔ «×» هر برچسب را حذف می‌کند | — |
+| رمز عبور تنظیمات | `#settings-password` | الزامی برای ذخیره؛ پیش‌فرض `1311` | — |
+| دکمهٔ «ذخیرهٔ تنظیمات» | `form#settings-form` | ارسال همهٔ مقادیر؛ در موفقیت پیام سبز و پاک شدن رمز، در خطا پیام قرمز | `POST /api/settings` |
+
+#### تب «گزارش‌ها»
+
+| کنترل | شناسه | رفتار | درخواست |
+|---|---|---|---|
+| فیلتر سرویس | `#log-service` | همه یا یکی از `scraper`، `neighborhood-discovery`، `workers-ai`، `jev`، `system` | `GET /api/logs?service=...` |
+| فیلتر وضعیت | `#log-status` | همه، خطاها یا موفق | `GET /api/logs?status=...` |
+
+### جریان‌های اصلی برنامه (Flows)
+#### ۱) اجرای خودکار زمان‌بندی‌شده
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cron (06:30 / 18:30 UTC)
+    participant W as Worker
+    participant WF as Workflow
+    participant D as Divar API
+    participant AI as Workers AI
+    participant DB as D1
+
+    C->>W: scheduled(event)
+    W->>DB: بررسی قفل workflow_running
+    W->>WF: create({source:'scheduled'})
+    WF->>DB: load-settings
+    WF->>DB: refresh-neighborhoods (حداکثر هر ۷ روز)
+    WF->>DB: انتخاب محله‌های auto_neighborhoods
+    loop هر محله (به ترتیب کم‌آگهی‌ترین)
+        WF->>D: postlist/w/search (شهر ۱، residential-rent)
+        WF->>DB: INSERT OR IGNORE listings
+    end
+    loop آگهی‌های در انتظار تا سقف سهمیه
+        WF->>DB: reserveAiCall (اتمیک)
+        WF->>AI: استخراج JSON (Qwen 3)
+        WF->>DB: UPDATE listing (ودیعه، اجاره، متراژ، برچسب)
+    end
+    WF->>DB: evaluatePending (jev، حداکثر ۵۰ ردیف)
+    WF->>DB: refreshAggregates (۸ دستور در یک batch)
+    WF->>DB: ثبت لاگ پایان و آزادسازی قفل
+```
+
+#### ۲) دریافت دستی یک محله
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as کاربر
+    participant UI as داشبورد
+    participant W as Worker
+    participant WF as Workflow
+    participant DB as D1
+    participant D as Divar API
+    participant AI as Workers AI
+
+    U->>UI: انتخاب محله و تعداد + «شروع دریافت»
+    UI->>W: POST /api/manual-runs
+    W->>DB: manual_searches += 1 و INSERT manual_run
+    W->>WF: create({manualRunId})
+    W-->>UI: 202 {id, status:'queued'}
+    UI->>W: GET /api/manual-runs/<id> (هر ۳ ثانیه)
+    WF->>DB: status = running
+    WF->>D: دریافت آگهی‌های محله
+    WF->>DB: ذخیرهٔ آگهی‌ها و status = scraped
+    WF->>AI: استخراج آگهی‌های جدید
+    WF->>DB: status = complete | quota_exhausted | failed
+    UI->>W: GET /api/manual-runs/<id>
+    W-->>UI: وضعیت پایانی + تعداد دریافت‌شده
+```
+
+#### ۳) ذخیرهٔ تنظیمات
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as کاربر
+    participant UI as فرم تنظیمات
+    participant W as Worker
+    participant DB as D1
+
+    U->>UI: تغییر مقادیر و «ذخیرهٔ تنظیمات»
+    UI->>W: POST /api/settings (شامل رمز)
+    alt رمز نادرست یا ورودی نامعتبر
+        W-->>UI: 4xx با پیام خطا
+        UI-->>U: نمایش پیام قرمز
+    else معتبر
+        W->>DB: به‌روزرسانی کلیدهای settings
+        W-->>UI: 200
+        UI-->>U: پیام موفقیت و پاک شدن رمز
+    end
+```
+
+#### ۴) بارگذاری اولیهٔ داشبورد
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as مرورگر
+    participant W as Worker
+    participant DB as D1
+
+    B->>W: GET /
+    W-->>B: HTML داشبورد
+    B->>W: GET /api/neighborhoods?all=1
+    W->>DB: خواندن neighborhoods + neighborhood_stats
+    W-->>B: فهرست محله‌ها
+    par هم‌زمان
+        B->>W: GET /api/analytics?days=30
+        W->>DB: ردیف شهر و ردیف محله‌ها + daily_stats
+        W-->>B: خلاصه، پنج محلهٔ برتر، روند روزانه
+    and
+        B->>W: GET /api/neighborhoods?page=1&page_size=20&days=30
+        W-->>B: جدول محله‌ها
+    and
+        B->>W: GET /api/quota
+        W->>DB: daily_ai_usage
+        W-->>B: سهمیهٔ امروز
+    end
+```
+
 ### مستندات اندپوینت‌های API
 
 | مسیر (Path) | متد | شرح عملکرد |
 |---|---|---|
-| `GET /api/analytics` | `GET` | دریافت خلاصه آماری، ۵ محله پرآگهی و روند روزانه (پارامترهای اختیاری: `days=30` و `neighborhood=<slug>`) |
+| `GET /api/analytics` | `GET` | دریافت خلاصه آماری، ۵ محله پرآگهی و روند روزانه (پارامترهای اختیاری: `days=30` و `neighborhood=<slug>`)؛ در مسیر کش، `stats_computed_at` نیز برگردانده می‌شود |
+| `GET /api/stats` | `GET` | خلاصهٔ آماری کل شهر برای ۳۰ روز (همان قرارداد `overall`) |
 | `GET /api/neighborhoods` | `GET` | دریافت آمار محله‌ها با قابلیت جستجو، مرتب‌سازی و صفحه‌بندی (`page`, `page_size`, `search`, `sort`) |
 | `GET /api/listings` | `GET` | لیست آگهی‌ها همراه با فیلتر محله، برچسب (`label`)، کلمه جستجو و صفحه‌بندی |
 | `POST /api/manual-runs` | `POST` | ثبت درخواست استخراج دستی با بدنه `{"neighborhood": "<slug>", "count": 10}` |
@@ -349,7 +521,8 @@ divar-housing-finder/
 │   ├── 0001_neighborhood_first_rebuild.sql  # بازسازی پایگاه داده مبتنی بر محله
 │   ├── 0002_daily_quota_and_listing_reclassification.sql # رده‌بندی هم‌خانه و سهمیه
 │   ├── 0003_retry_failed_extractions.sql     # بازنشانی آگهی‌های ناموفق
-│   └── 0004_increase_daily_quota_to_500.sql  # افزایش سقف سهمیه به ۵۰۰
+│   ├── 0004_increase_daily_quota_to_500.sql  # افزایش سقف سهمیه به ۵۰۰
+│   └── 0005_precomputed_stats.sql            # جدول‌های آمار پیش‌محاسبه‌شده
 ├── seed/
 │   └── seed-neighborhoods.sql                 # داده‌های اولیه محله‌ها و تنظیمات
 ├── src/
@@ -358,6 +531,7 @@ divar-housing-finder/
 │   ├── scraper.js                             # توابع دریافت داده و ارتباط با API دیوار
 │   ├── extractor.js                           # فراخوانی مدل زبانی Workers AI (Qwen)
 │   ├── jev.js                                 # موتور ارزیابی قیمت مشکوک و غیرواقعی
+│   ├── stats.js                               # تجمیع SQL، بازسازی کش آمار و readerهای کش
 │   ├── quota.js                               # مدیریت محاسبات سهمیه ۵۰۰‌تایی و ساعت تهران
 │   ├── rental-pricing.js                      # فرمول‌های تبدیل رهن و اجاره به ودیعه معادل
 │   ├── listing-classification.js              # الگوهای تشخیص آگهی‌های هم‌خانه و اشتراکی
@@ -367,12 +541,17 @@ divar-housing-finder/
 │   └── utils.js                               # توابع کمکی، نرمال‌سازی اعداد فارسی و لاگ‌گذاری
 ├── test/
 │   ├── quota.test.js                          # تست‌های واحد منطق سهمیه و زمان‌بندی
-│   └── rental-pricing.test.js                 # تست‌های واحد قیمت‌گذاری و تطبیق متن
+│   ├── rental-pricing.test.js                 # تست‌های واحد قیمت‌گذاری و تطبیق متن
+│   └── system-verification.test.js            # تست‌های یکپارچگی سامانه
+├── scripts/
+│   └── capture-screenshots.js                 # تولید تصاویر مستندات از داشبورد
+├── docs/
+│   └── screenshots/                           # تصاویر رابط کاربری برای مستندات
 ├── package.json                               # مشخصات پروژه و اسکریپت‌های npm
 ├── schema.sql                                 # ساختار کامل جداول پایگاه داده D1
 ├── wrangler.jsonc                             # پیکربندی سرورلس، دیتابیس، مدل هوش مصنوعی و کرون
 ├── README.md                                  # فایل راهنمای اصلی پروژه (فارسی)
-├── README_EN.md                               # نسخه پیشین انگلیسی راهنما
+├── README_EN.md                               # نسخه انگلیسی راهنما
 └── DOCUMENTATION_FA.md                        # گزارش جامع فنی و دانشگاهی سامانه
 ```
 
@@ -383,3 +562,14 @@ divar-housing-finder/
 - **حفظ حریم خصوصی و امنیت**: این سامانه به طور پیش‌فرض روی داشبورد احراز هویت کاربری ندارد؛ بنابراین در صورت استقرار عمومی، دسترسی به نشانی آن را محدود نگه دارید. بخش تغییر تنظیمات دارای رمز عبور پیش‌فرض است.
 - **مسئولیت استخراج داده**: وب‌سایت دیوار ممکن است ساختار پاسخ‌های داخلی API را تغییر دهد یا درخواست‌های پرشمار خودکار را محدود کند. این سامانه با رعایت فاصله‌گذاری مناسب بین درخواست‌ها (`step.sleep`) و محدودیت ۵۰۰ عددی، بار بسیار سبکی روی سرورها ایجاد می‌کند.
 - **ماهیت برچسب‌های مشکوک/فیک**: برچسب‌های جعلی و مشکوک جنبه سیگنال‌های کمکی برای بازبینی کارشناس دارند و به منزله ادعای قطعی در مورد قصد آگهی‌دهنده نیستند.
+
+---
+
+## ۹. انطباق با سرفصل‌های پروژه
+
+| سرفصل | محل پاسخ در این مخزن |
+|---|---|
+| **تعیین حوزهٔ کسب‌وکاری** | حوزهٔ «پایش بازار رهن و اجارهٔ مسکن و شناسایی آگهی‌های مشکوک» در بخش ۱ همین فایل و بخش ۲ سند `DOCUMENTATION_FA.md` تحلیل شده است. |
+| **تحلیل برای مدل داده‌ای و ساختار جداول** | بخش ۲ همین فایل (نمودار ER، روابط، ستون‌ها، فرهنگ داده) و بخش ۴ سند `DOCUMENTATION_FA.md` (تحلیل موجودیت‌ها، نرمال‌سازی، ایندکس‌گذاری و الگوی خواندن/نوشتن). اسکریپت اجرایی: `schema.sql` و `migrations/`. |
+| **پیاده‌سازی با زبان انتخابی** | جاوااسکریپت (ES Modules) روی Cloudflare Workers؛ کد در `src/` و پیکربندی در `wrangler.jsonc`. |
+| **سورس + راهنمای کاربردی + سند تحلیل و طراحی** | سورس کامل در مخزن؛ راهنمای کاربر در همین `README.md` (نصب، اجرا، دکمه‌ها، API)؛ سند تحلیل و طراحی در `DOCUMENTATION_FA.md`؛ تصاویر در `docs/screenshots/`. |

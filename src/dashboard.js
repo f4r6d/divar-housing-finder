@@ -70,7 +70,7 @@ $('listing-neighborhood').addEventListener('change',event=>{state.listingNeighbo
 $('listing-label').addEventListener('change',event=>{state.listingLabel=event.target.value;state.listingPage=1;loadListings()});
 $('listing-prev').addEventListener('click',()=>{state.listingPage=Math.max(1,state.listingPage-1);loadListings()});$('listing-next').addEventListener('click',()=>{state.listingPage+=1;loadListings()});
 $('manual-start').addEventListener('click',startManual);$('auto-search').addEventListener('input',showSuggestions);$('settings-form').addEventListener('submit',saveSettings);$('log-service').addEventListener('change',loadLogs);$('log-status').addEventListener('change',loadLogs);
-refresh().catch(error=>console.error(error));
+refresh().then(()=>{const initialTab=new URL(location.href).searchParams.get('tab');if(initialTab)showTab(initialTab)}).catch(error=>console.error(error));
 </script>
 </body></html>`;
 }

@@ -8,6 +8,7 @@ import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIM
 import { depositEquivalentToman } from './rental-pricing.js';
 import { isSharedHousingListing } from './listing-classification.js';
 import { aiCallBudgets, neighborhoodTarget, tehranClock } from './quota.js';
+import { refreshAggregates } from './stats.js';
 
 function parsePositiveSetting(settings, key, fallback) {
   const value = Number(settings[key]);
@@ -245,6 +246,15 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
       }
 
       const evaluated = await evaluatePending(this.env, step);
+      await step.do('refresh-stats', async () => {
+        try {
+          const stats = await refreshAggregates(this.env);
+          await logSuccess(this.env, 'system', null,
+            `Stats refreshed: neighborhoods=${stats.neighborhoods}, days=${stats.days}`, 200);
+        } catch (error) {
+          await logError(this.env, 'system', 'refresh-stats', error);
+        }
+      });
       await step.do('workflow-summary', () => logSuccess(this.env, 'system', null,
         `Workflow complete: source=${source}, evaluated=${evaluated}`, 200));
       return { source, evaluated };

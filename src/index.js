@@ -4,6 +4,10 @@ import { refreshNeighborhoodsIfDue } from './neighborhood-discovery.js';
 import { getSettings, json, logError } from './utils.js';
 import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
 import { aiCallBudgets, tehranClock } from './quota.js';
+import {
+  CACHE_WINDOW_DAYS, computeDaily, computeSummary, loadCachedDaily, loadCachedListingTotal,
+  loadCachedNeighborhoodStats, loadCachedSummary
+} from './stats.js';
 
 export { DivarScrapeWorkflow };
 
@@ -58,18 +62,19 @@ function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function median(values) {
-  const sorted = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
-  if (!sorted.length) return null;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
 function safeDays(value) {
   return positiveInteger(value, 30, 90);
 }
 
-async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pageSize = 20, sort = 'count', order = 'desc', all = false } = {}) {
+async function loadNeighborhoodStats(env, options = {}) {
+  if ((options.days ?? 30) === CACHE_WINDOW_DAYS) {
+    const cached = await loadCachedNeighborhoodStats(env, options);
+    if (cached) return cached;
+  }
+  return loadNeighborhoodStatsLive(env, options);
+}
+
+async function loadNeighborhoodStatsLive(env, { days = 30, search = '', page = 1, pageSize = 20, sort = 'count', order = 'desc', all = false } = {}) {
   const sortColumn = SORT_COLUMNS.get(sort) || SORT_COLUMNS.get('count');
   const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
   const offset = (page - 1) * pageSize;
@@ -115,9 +120,14 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
     counts AS (
       SELECT neighborhood_id, COUNT(*) AS count,
         SUM(CASE WHEN fake_label = 'fake' THEN 1 ELSE 0 END) AS fake_count,
-        SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count,
-        SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END) AS hamkhane_count
+        SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count
       FROM recent GROUP BY neighborhood_id
+    ),
+    hamkhane AS (
+      SELECT neighborhood_id, COUNT(*) AS hamkhane_count
+      FROM listings
+      WHERE scraped_at >= datetime('now', '-${days} days') AND fake_label = 'hamkhane'
+      GROUP BY neighborhood_id
     ),
     price_stats AS (
       SELECT neighborhood_id, AVG(deposit_toman) AS avg_deposit, AVG(rent_toman) AS avg_rent,
@@ -128,12 +138,13 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
       COALESCE(c.count, 0) AS count,
       COALESCE(c.fake_count, 0) AS fake_count,
       COALESCE(c.suspicious_count, 0) AS suspicious_count,
-      COALESCE(c.hamkhane_count, 0) AS hamkhane_count,
+      COALESCE(h.hamkhane_count, 0) AS hamkhane_count,
       ps.avg_deposit, ps.avg_rent, ps.avg_deposit_per_sqm,
       sm.median_deposit_per_sqm,
       dm.median_deposit, rm.median_rent
     FROM neighborhoods n
     LEFT JOIN counts c ON c.neighborhood_id = n.id
+    LEFT JOIN hamkhane h ON h.neighborhood_id = n.id
     LEFT JOIN deposit_medians dm ON dm.neighborhood_id = n.id
     LEFT JOIN rent_medians rm ON rm.neighborhood_id = n.id
     LEFT JOIN price_stats ps ON ps.neighborhood_id = n.id
@@ -152,65 +163,19 @@ async function loadNeighborhoodStats(env, { days = 30, search = '', page = 1, pa
 }
 
 async function getSummary(env, days, neighborhoodSlug = '') {
-  const filter = neighborhoodSlug ? 'AND n.slug = ?' : '';
-  const binds = neighborhoodSlug ? [neighborhoodSlug] : [];
-  const aggregate = await env.DB.prepare(`
-    SELECT COUNT(*) AS count,
-      SUM(CASE WHEN l.fake_label = 'fake' THEN 1 ELSE 0 END) AS fake_count,
-      SUM(CASE WHEN l.fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count,
-      SUM(CASE WHEN l.fake_label = 'hamkhane' THEN 1 ELSE 0 END) AS hamkhane_count,
-      SUM(CASE WHEN l.extraction_done = 0 THEN 1 ELSE 0 END) AS pending
-    FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
-  `).bind(...binds).first();
-  const prices = await env.DB.prepare(`
-    SELECT l.deposit_toman, l.rent_toman, l.size_m2
-    FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
-  `).bind(...binds).all();
-  const rows = prices.results || [];
-  return {
-    ...aggregate,
-    count: Number(aggregate?.count || 0),
-    fake_count: Number(aggregate?.fake_count || 0),
-    suspicious_count: Number(aggregate?.suspicious_count || 0),
-    hamkhane_count: Number(aggregate?.hamkhane_count || 0),
-    pending: Number(aggregate?.pending || 0),
-    average_deposit: average(rows.map((row) => Number(row.deposit_toman))),
-    average_rent: average(rows.map((row) => Number(row.rent_toman))),
-    average_deposit_per_sqm: average(rows.map((row) =>
-      Number(row.deposit_toman) > 0 && Number(row.size_m2) > 0
-        ? Number(row.deposit_toman) / Number(row.size_m2)
-        : NaN)),
-    median_deposit: median(rows.map((row) => Number(row.deposit_toman))),
-    median_deposit_per_sqm: median(rows.map((row) =>
-      Number(row.deposit_toman) > 0 && Number(row.size_m2) > 0
-        ? Number(row.deposit_toman) / Number(row.size_m2)
-        : NaN)),
-    median_rent: median(rows.map((row) => Number(row.rent_toman)))
-  };
-}
-
-function average(values) {
-  const valid = values.filter((value) => Number.isFinite(value) && value > 0);
-  return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null;
+  if (days === CACHE_WINDOW_DAYS) {
+    const cached = await loadCachedSummary(env, neighborhoodSlug);
+    if (cached) return cached;
+  }
+  return computeSummary(env, days, neighborhoodSlug);
 }
 
 async function getDailyTrend(env, days, neighborhoodSlug = '') {
-  const filter = neighborhoodSlug ? 'AND n.slug = ?' : '';
-  const binds = neighborhoodSlug ? [neighborhoodSlug] : [];
-  const result = await env.DB.prepare(`
-    SELECT date(l.scraped_at) AS day, l.deposit_toman
-    FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id
-    WHERE l.scraped_at >= datetime('now', '-${days} days') AND l.fake_label <> 'hamkhane' ${filter}
-    ORDER BY day
-  `).bind(...binds).all();
-  const byDay = new Map();
-  for (const row of result.results || []) {
-    if (!byDay.has(row.day)) byDay.set(row.day, []);
-    if (Number(row.deposit_toman) > 0) byDay.get(row.day).push(Number(row.deposit_toman));
+  if (days === CACHE_WINDOW_DAYS && !neighborhoodSlug) {
+    const cached = await loadCachedDaily(env);
+    if (cached) return cached;
   }
-  return [...byDay].map(([day, deposits]) => ({ day, median_deposit: median(deposits) }));
+  return computeDaily(env, days, neighborhoodSlug);
 }
 
 async function getQuota(env) {
@@ -277,15 +242,16 @@ async function apiRoute(request, env, url) {
       : null;
     if (neighborhoodSlug && !neighborhood) return json({ error: 'محله پیدا نشد.' }, 404);
     const top = await loadNeighborhoodStats(env, { days, page: 1, pageSize: 5, sort: 'count', order: 'desc' });
-    const [overall, selected, daily] = await Promise.all([
-      getSummary(env, days),
-      neighborhood ? getSummary(env, days, neighborhood.slug) : getSummary(env, days),
+    const overall = await getSummary(env, days);
+    const [selected, daily] = await Promise.all([
+      neighborhood ? getSummary(env, days, neighborhood.slug) : Promise.resolve(overall),
       getDailyTrend(env, days, neighborhood?.slug || '')
     ]);
     return json({
       days,
       overall,
       selected: { ...selected, name_fa: neighborhood?.name_fa || 'همهٔ محله‌ها' },
+      stats_computed_at: overall.stats_computed_at || null,
       top_neighborhoods: top.neighborhoods.filter((item) => Number(item.count) > 0),
       daily
     });
@@ -318,9 +284,10 @@ async function apiRoute(request, env, url) {
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const listWhere = label === 'hamkhane' ? (where || 'WHERE 1=1') : `${where ? `${where} AND` : 'WHERE'} l.fake_label <> 'hamkhane'`;
-    const count = await env.DB.prepare(`
+    const cachedTotal = clauses.length ? null : await loadCachedListingTotal(env);
+    const count = cachedTotal === null ? await env.DB.prepare(`
       SELECT COUNT(*) AS total FROM listings l JOIN neighborhoods n ON n.id = l.neighborhood_id ${listWhere}
-    `).bind(...values).first();
+    `).bind(...values).first() : null;
     const result = await env.DB.prepare(`
       SELECT l.id, l.divar_token, l.url, l.title, l.price_toman, l.rent_toman, l.deposit_toman,
         l.deposit_equivalent_toman, l.rent_deposit_flexible, l.size_m2, l.rooms,
@@ -334,7 +301,7 @@ async function apiRoute(request, env, url) {
       ...listing,
       extracted_data: parseJson(listing.extracted_data, {})
     }));
-    const total = Number(count?.total || 0);
+    const total = cachedTotal ?? Number(count?.total || 0);
     return json({ listings, page, page_size: pageSize, total, pages: Math.ceil(total / pageSize) });
   }
 
