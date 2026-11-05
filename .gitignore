@@ -9,4 +9,4 @@ coverage/
 dist/
 .cache/
 .documentation-build.html
-DOCUMENTATION_FA.pdf.tmp
+*.pdf.tmp

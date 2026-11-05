@@ -4,8 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const inputPath = path.join(root, 'DOCUMENTATION_FA.md');
-const outputPath = path.join(root, 'DOCUMENTATION_FA.pdf');
+const [inputArg, outputArg] = process.argv.slice(2);
+const inputPath = inputArg ? path.resolve(root, inputArg) : path.join(root, 'DOCUMENTATION_FA.md');
+const outputPath = outputArg
+  ? path.resolve(root, outputArg)
+  : inputPath.replace(/\.md$/i, '.pdf');
 const cacheDir = path.join(root, '.cache', 'docs-pdf');
 const htmlPath = path.join(root, '.documentation-build.html');
 
@@ -61,7 +64,14 @@ function findChrome() {
 }
 
 async function main() {
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`Markdown input was not found: ${path.relative(root, inputPath)}`);
+  }
   const markdown = fs.readFileSync(inputPath, 'utf8');
+  const titleMatch = markdown.match(/^#\s+(.+)$/m);
+  const documentTitle = (titleMatch?.[1] || 'مستندات').replace(/[&<>]/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;'
+  })[char]);
   for (const [name, url] of libraryAssets) {
     await ensureFile(name, url);
   }
@@ -98,9 +108,12 @@ async function main() {
   font-style: normal;
 }
 @page { size: A4; margin: 16mm 14mm 18mm; }
+@page portrait { size: A4; margin: 16mm 14mm 18mm; }
+@page landscape { size: A4 landscape; margin: 12mm 14mm; }
 * { box-sizing: border-box; }
 html { direction: rtl; }
 body {
+  page: portrait;
   margin: 0;
   font-family: 'Vazirmatn', 'DejaVu Sans', sans-serif;
   font-size: 10.3pt;
@@ -135,8 +148,14 @@ code { font-family: 'DejaVu Sans Mono', monospace; direction: ltr; unicode-bidi:
 pre code { color: inherit; background: none; padding: 0; font-size: inherit; }
 blockquote { margin: 3mm 0 4mm; padding: 2.4mm 4mm; border-right: 3px solid #0f766e; background: #f0fdfa; color: #134e4a; }
 blockquote p { margin: 1.4mm 0; }
-.mermaid { direction: ltr; text-align: center; margin: 4mm 0 6mm; page-break-inside: avoid; }
-.mermaid svg { max-width: 100% !important; height: auto !important; }
+.mermaid { direction: ltr; text-align: center; margin: 3mm 0 5mm; page-break-inside: avoid; }
+.mermaid svg { display: block; margin: 0 auto; max-width: 100%; }
+.landscape { page: landscape; break-inside: avoid; }
+.landscape-start { page: landscape; break-before: page; }
+.landscape .mermaid { margin: 0; }
+.landscape h2, .landscape h3, .landscape h4 { margin-top: 0; }
+.portrait-start { page: portrait; break-before: page; }
+.page-break { break-after: page; }
 .note-block { border: 1px solid #cbd5e1; border-right: 3px solid #0f766e; background: #f8fafc; padding: 3mm; margin: 3mm 0 5mm; }
 .note-title { font-weight: 700; color: #0f172a; margin-bottom: 2mm; }
 .katex { direction: ltr; unicode-bidi: isolate; font-size: 1.02em; }
@@ -149,7 +168,7 @@ ${katexCss}
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8">
-<title>مستندات جامع سامانه خانه‌یاب دیوار</title>
+<title>${documentTitle}</title>
 <style>${css}</style>
 </head>
 <body>
@@ -252,6 +271,84 @@ ${katexCss}
   } catch (error) {
     console.error('mermaid failed', error);
   }
+
+  // Chrome paginates a diagram that exceeds the printable area instead of scaling it.
+  // Fit every SVG to the page, and give wide diagrams a dedicated landscape page.
+  const portraitArea = { width: 688, height: 794 };   // 182mm x 210mm at 96dpi
+  const landscapeArea = { width: 1017, height: 600 }; // 269mm x 159mm at 96dpi, room for a heading
+  const pageContentHeight = 995;                     // A4 minus the 16mm/18mm vertical margins
+  const leadingSelector = 'P, H2, H3, H4';
+  const layouts = [...content.querySelectorAll('.mermaid')].map((block) => {
+    const svg = block.querySelector('svg');
+    const box = svg?.viewBox?.baseVal;
+    if (!box || !box.width || !box.height) return null;
+    const portraitScale = Math.min(
+      portraitArea.width / box.width,
+      portraitArea.height / box.height
+    );
+    return {
+      block,
+      svg,
+      box,
+      useLandscape: box.width / box.height > 1.3 && portraitScale < 0.66
+    };
+  });
+  let previousWasLandscape = false;
+  layouts.forEach((layout, index) => {
+    if (!layout) {
+      previousWasLandscape = false;
+      return;
+    }
+    const { block, svg, box, useLandscape } = layout;
+    let portraitHeight = portraitArea.height;
+    if (!useLandscape) {
+      const lead = [];
+      let prev = block.previousElementSibling;
+      while (prev && prev.matches(leadingSelector)) {
+        lead.unshift(prev);
+        prev = prev.previousElementSibling;
+      }
+      if (lead.length) {
+        const span = block.getBoundingClientRect().top - lead[0].getBoundingClientRect().top;
+        const available = pageContentHeight - span - 36;
+        if (available > 520) portraitHeight = Math.min(portraitHeight, available);
+      }
+    }
+    const area = useLandscape ? landscapeArea : { ...portraitArea, height: portraitHeight };
+    const scale = Math.min(area.width / box.width, area.height / box.height);
+    svg.style.width = Math.round(box.width * scale) + 'px';
+    svg.style.height = Math.round(box.height * scale) + 'px';
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    if (!useLandscape) {
+      previousWasLandscape = false;
+      return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = previousWasLandscape ? 'landscape' : 'landscape landscape-start';
+    const leading = [];
+    let prev = block.previousElementSibling;
+    while (prev && prev.tagName === 'P') {
+      leading.unshift(prev);
+      prev = prev.previousElementSibling;
+    }
+    if (prev && /^H[2-4]$/.test(prev.tagName)) leading.unshift(prev);
+    block.replaceWith(wrapper);
+    leading.forEach((node) => wrapper.appendChild(node));
+    wrapper.appendChild(block);
+    const textHeight = leading.reduce(
+      (sum, node) => sum + node.getBoundingClientRect().height,
+      0
+    );
+    const availableHeight = Math.max(320, landscapeArea.height - textHeight - 24);
+    const fitted = Math.min(landscapeArea.width / box.width, availableHeight / box.height);
+    svg.style.width = Math.round(box.width * fitted) + 'px';
+    svg.style.height = Math.round(box.height * fitted) + 'px';
+    previousWasLandscape = true;
+    if (!layouts[index + 1]?.useLandscape) {
+      wrapper.nextElementSibling?.classList.add('portrait-start');
+    }
+  });
   document.body.setAttribute('data-ready', 'true');
 })();
 </script>
@@ -264,7 +361,7 @@ ${katexCss}
   fs.rmSync(tempPdf, { force: true });
 
   const chrome = findChrome();
-  process.stdout.write(`Rendering PDF with ${chrome}\n`);
+  process.stdout.write(`Rendering ${path.relative(root, inputPath)} to ${path.relative(root, outputPath)} with ${chrome}\n`);
   const print = spawnSync(chrome, [
     '--headless=new',
     '--disable-gpu',
