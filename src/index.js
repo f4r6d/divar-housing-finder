@@ -1,8 +1,8 @@
 import { DivarScrapeWorkflow } from './workflow.js';
 import { dashboardHtml } from './dashboard.js';
 import { refreshNeighborhoodsIfDue } from './neighborhood-discovery.js';
-import { getSettings, json, logError } from './utils.js';
-import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN } from './constants.js';
+import { getSettings, json, logError, acquireWorkflowLease, isWorkflowBusy, releaseWorkflowLease } from './utils.js';
+import { DAILY_LISTING_LIMIT_DEFAULT, DAILY_LISTING_LIMIT_MAX, DAILY_LISTING_LIMIT_MIN, LEASE_STALE_MS } from './constants.js';
 import { aiCallBudgets, tehranClock } from './quota.js';
 import {
   CACHE_WINDOW_DAYS, computeDaily, computeSummary, loadCachedDaily, loadCachedListingTotal,
@@ -30,27 +30,25 @@ function html(body, status = 200) {
   });
 }
 
-async function setWorkflowRunning(env, value) {
-  await env.DB.prepare(`
-    INSERT INTO system_state (key, value, updated_at) VALUES ('workflow_running', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).bind(String(value)).run();
-}
+const BUSY_ERROR = 'یک اجرای هم‌زمان از قبل در حال اجرا است.';
 
 async function startWorkflow(env, params = {}) {
   if (!env.DIVAR_WORKFLOW) throw new Error('Workflow binding is not configured');
-  const lock = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'workflow_running'").first();
-  if (String(lock?.value || '0') === '1') {
-    throw new Error('یک اجرای هم‌زمان از قبل در حال اجرا است.');
-  }
-  const id = `divar-${Date.now()}-${crypto.randomUUID()}`;
+  if (await isWorkflowBusy(env, LEASE_STALE_MS)) return null;
+  const runId = crypto.randomUUID();
+  if (!await acquireWorkflowLease(env, runId, LEASE_STALE_MS)) return null;
+  const id = `divar-${Date.now()}-${runId}`.slice(0, 100);
   try {
-    await setWorkflowRunning(env, true);
-    return env.DIVAR_WORKFLOW.create({ id, params });
+    return await env.DIVAR_WORKFLOW.create({ id, params: { ...params, phase: 'plan', seq: 0, runId } });
   } catch (error) {
-    await setWorkflowRunning(env, false);
+    await releaseWorkflowLease(env, runId);
     throw error;
   }
+}
+
+async function markRunFailed(env, id, message) {
+  await env.DB.prepare("UPDATE manual_runs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?")
+    .bind(String(message).slice(0, 1000), id).run();
 }
 
 function positiveInteger(value, fallback, maximum) {
@@ -323,7 +321,7 @@ async function apiRoute(request, env, url) {
   }
 
   if (pathname === '/api/refresh' && request.method === 'POST') {
-    await startWorkflow(env, { source: 'dashboard-refresh' });
+    if (!await startWorkflow(env, { source: 'dashboard-refresh' })) return json({ error: BUSY_ERROR }, 409);
     return json({ ok: true, queued: true }, 202);
   }
 
@@ -349,6 +347,9 @@ async function apiRoute(request, env, url) {
     if (budgets.manual_remaining <= 0) {
       return json({ error: 'سهمیهٔ دریافت دستی امروز تمام شده است. فردا دوباره تلاش کنید.' }, 429);
     }
+    if (await isWorkflowBusy(env, LEASE_STALE_MS)) {
+      return json({ error: BUSY_ERROR }, 409);
+    }
     const effectiveCount = Math.min(count, budgets.manual_remaining);
     const id = crypto.randomUUID();
     await env.DB.batch([
@@ -358,10 +359,12 @@ async function apiRoute(request, env, url) {
         .bind(id, neighborhood.id, count)
     ]);
     try {
-      await startWorkflow(env, { manualRunId: id });
+      if (!await startWorkflow(env, { manualRunId: id })) {
+        await markRunFailed(env, id, BUSY_ERROR);
+        return json({ error: BUSY_ERROR }, 409);
+      }
     } catch (error) {
-      await env.DB.prepare("UPDATE manual_runs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?")
-        .bind(String(error?.message || error).slice(0, 1000), id).run();
+      await markRunFailed(env, id, error?.message || error);
       throw error;
     }
     return json({ id, status: 'queued', requested_count: count, effective_count: effectiveCount }, 202);
@@ -473,11 +476,14 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(startWorkflow(env, {
-      source: 'scheduled',
-      cron: event.cron || ''
-    }).catch(async (error) => {
-      await logError(env, 'system', 'scheduled', error);
-    }));
+    ctx.waitUntil((async () => {
+      try {
+        if (!await startWorkflow(env, { source: 'scheduled', cron: event.cron || '' })) {
+          await logError(env, 'system', 'scheduled', new Error(BUSY_ERROR));
+        }
+      } catch (error) {
+        await logError(env, 'system', 'scheduled', error);
+      }
+    })());
   }
 };

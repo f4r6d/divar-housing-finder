@@ -31,6 +31,12 @@ export function aiCallBudgets(dailyLimit, usage = {}, hour = 10) {
   };
 }
 
+export function canReserveCall(usage, dailyLimit, source = 'auto', hour = 10) {
+  const budgets = aiCallBudgets(dailyLimit, usage, hour);
+  if (budgets.remaining <= 0) return false;
+  return source === 'manual' ? budgets.manual_remaining > 0 : budgets.auto_remaining > 0;
+}
+
 export function listingPagesFor(wanted, {
   perPage = LISTINGS_PER_PAGE,
   max = MAX_PAGES_PER_NEIGHBORHOOD,
