@@ -1,4 +1,4 @@
-import { isAiQuotaExhausted, logError, logSuccess, markAiQuotaExhausted } from './utils.js';
+import { logError, logSuccess, markAiQuotaExhausted } from './utils.js';
 
 const MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 
@@ -10,7 +10,6 @@ function parseModelResponse(result) {
 }
 
 export async function extractListingData(env, listing) {
-  if (await isAiQuotaExhausted(env)) return null;
   if (!env.AI) {
     await logError(env, 'workers-ai', listing.url, 'Workers AI binding is unavailable');
     return null;

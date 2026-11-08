@@ -44,10 +44,13 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   let fetched = 0;
   let searched = false;
   let failed = false;
+  const district = /^\d+$/.test(String(neighborhood.divar_id || ''))
+    ? String(neighborhood.divar_id)
+    : neighborhood.slug;
   const maxPages = listingPagesFor(wanted);
   for (let pageNumber = 1; pageNumber <= maxPages && inserted < wanted; pageNumber += 1) {
     const response = await step.do(`search-${source}-${neighborhood.slug}-${pageNumber}`, () =>
-      fetchListingsPage(env, '1', 'residential-rent', pageNumber, [neighborhood.slug]));
+      fetchListingsPage(env, '1', 'residential-rent', pageNumber, [district]));
     if (!response) {
       failed = true;
       break;
@@ -58,20 +61,23 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
     if (!candidates.length) break;
     fetched += candidates.length;
     const newListings = candidates.slice(0, wanted - inserted);
-    for (const listing of newListings) {
-      const isSharedHousing = isSharedHousingListing(listing.title, listing.description);
-      const result = await env.DB.prepare(`
-        INSERT OR IGNORE INTO listings
-          (divar_token, url, title, description, image_url, neighborhood_id, scrape_source, extraction_done,
-            fake_label, fake_reason, jev_done)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-      `).bind(listing.token, `https://divar.ir/v/${encodeURIComponent(listing.token)}`,
-        listing.title, listing.description, listing.image_url, neighborhood.id, source,
-        isSharedHousing ? 'hamkhane' : 'unknown',
-        isSharedHousing ? 'آگهی هم‌خانه است و اجارهٔ مستقل محسوب نمی‌شود.' : null,
-        isSharedHousing ? 1 : 0).run();
-      inserted += Number(result.meta?.changes || 0);
-    }
+    inserted += await step.do(`insert-${source}-${neighborhood.slug}-${pageNumber}`, async () => {
+      const statements = newListings.map((listing) => {
+        const isSharedHousing = isSharedHousingListing(listing.title, listing.description);
+        return env.DB.prepare(`
+          INSERT OR IGNORE INTO listings
+            (divar_token, url, title, description, image_url, neighborhood_id, scrape_source, extraction_done,
+              fake_label, fake_reason, jev_done)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+        `).bind(listing.token, `https://divar.ir/v/${encodeURIComponent(listing.token)}`,
+          listing.title, listing.description, listing.image_url, neighborhood.id, source,
+          isSharedHousing ? 'hamkhane' : 'unknown',
+          isSharedHousing ? 'آگهی هم‌خانه است و اجارهٔ مستقل محسوب نمی‌شود.' : null,
+          isSharedHousing ? 1 : 0);
+      });
+      const results = await env.DB.batch(statements);
+      return results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
+    });
     if (inserted < wanted && candidates.length >= 30) {
       await step.sleep(`page-spacing-${source}-${neighborhood.slug}-${pageNumber}`, '1 second');
     } else {
@@ -80,14 +86,20 @@ async function scrapeNeighborhood(env, step, neighborhood, wanted, source, runId
   }
 
   if (searched) {
-    await env.DB.prepare("UPDATE neighborhoods SET last_scraped_at = datetime('now') WHERE id = ?")
-      .bind(neighborhood.id).run();
-  }
-  if (runId && searched) {
-    await env.DB.prepare(`
-      UPDATE manual_runs SET fetched_count = ?, status = ?, error = ?, finished_at = datetime('now') WHERE id = ?
-    `).bind(inserted, failed ? 'failed' : inserted ? 'scraped' : 'empty',
-      failed ? 'ادامهٔ دریافت از دیوار ناموفق بود.' : null, runId).run();
+    const status = failed ? 'failed' : inserted ? 'scraped' : 'empty';
+    const error = failed ? 'ادامهٔ دریافت از دیوار ناموفق بود.' : null;
+    await step.do(`finish-scrape-${source}-${neighborhood.slug}`, async () => {
+      const statements = [
+        env.DB.prepare("UPDATE neighborhoods SET last_scraped_at = datetime('now') WHERE id = ?")
+          .bind(neighborhood.id)
+      ];
+      if (runId) {
+        statements.push(env.DB.prepare(`
+          UPDATE manual_runs SET fetched_count = ?, status = ?, error = ?, finished_at = datetime('now') WHERE id = ?
+        `).bind(inserted, status, error, runId));
+      }
+      await env.DB.batch(statements);
+    });
   }
   return { inserted, fetched, failed: failed || !searched };
 }
@@ -185,7 +197,7 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
       if (payload.manualRunId) {
         source = 'manual';
         const run = await step.do('load-manual-run', () => this.env.DB.prepare(`
-          SELECT r.id AS run_id, r.requested_count, r.status, n.id AS neighborhood_id, n.slug, n.name_fa
+          SELECT r.id AS run_id, r.requested_count, r.status, n.id AS neighborhood_id, n.slug, n.name_fa, n.divar_id
           FROM manual_runs r JOIN neighborhoods n ON n.id = r.neighborhood_id
           WHERE r.id = ?
         `).bind(payload.manualRunId).first());
@@ -204,7 +216,7 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
             const requested = Number(run.requested_count);
             const target = Math.min(requested, remaining);
             const scraped = await scrapeNeighborhood(this.env, step, {
-              id: run.neighborhood_id, slug: run.slug, name_fa: run.name_fa
+              id: run.neighborhood_id, slug: run.slug, name_fa: run.name_fa, divar_id: run.divar_id
             }, target, 'manual', run.run_id);
             if (scraped.failed) throw new Error('دریافت آگهی از دیوار ناموفق بود.');
             let extracted = { quota_locked: false };
@@ -235,7 +247,7 @@ export class DivarScrapeWorkflow extends WorkflowEntrypoint {
           const selected = JSON.parse(settings.auto_neighborhoods || '[]');
           const neighborhoodsResult = selected.length ? await step.do('select-neighborhoods', () =>
             this.env.DB.prepare(`
-              SELECT n.id, n.slug, n.name_fa, COUNT(CASE WHEN l.scraped_at >= datetime('now', '-7 days') THEN 1 END) AS recent_count
+              SELECT n.id, n.slug, n.name_fa, n.divar_id, COUNT(CASE WHEN l.scraped_at >= datetime('now', '-7 days') THEN 1 END) AS recent_count
               FROM neighborhoods n LEFT JOIN listings l ON l.neighborhood_id = n.id
               WHERE n.city_slug = 'tehran' AND n.is_active = 1 AND n.slug IN (${selected.map(() => '?').join(',')})
               GROUP BY n.id ORDER BY recent_count ASC, n.last_scraped_at ASC
