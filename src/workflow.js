@@ -15,7 +15,7 @@ import {
 } from './constants.js';
 import { depositEquivalentToman } from './rental-pricing.js';
 import { isSharedHousingListing } from './listing-classification.js';
-import { aiCallBudgets, listingPagesFor, manualRunOutcome, neighborhoodTarget, tehranClock } from './quota.js';
+import { aiCallBudgets, listingPagesFor, manualRunOutcome, neighborhoodTarget, nextAiQuotaReset, tehranClock } from './quota.js';
 import { refreshAggregates } from './stats.js';
 import { childCreationDecision, childId, classifyBacklog, extractSlice, hopFilled, nextPayload } from './chain.js';
 
@@ -79,7 +79,8 @@ async function scrapeHoods(env, step, payload) {
     if (searchedPages >= SCRAPE_PAGES_PER_INSTANCE) break;
     const hood = hoods[index];
     const target = Math.min(remaining, neighborhoodTarget(hoods, index, remaining));
-    const pageCap = Math.min(listingPagesFor(target), PAGES_PER_HOOD, SCRAPE_PAGES_PER_INSTANCE - searchedPages);
+    const pageCap = Math.min(listingPagesFor(target), payload.source === 'manual' ? SCRAPE_PAGES_PER_INSTANCE : PAGES_PER_HOOD,
+      SCRAPE_PAGES_PER_INSTANCE - searchedPages);
     const result = await scrapeOneHood(env, step, hood, target, payload.source, payload.manualRunId || null, pageCap);
     searchedPages += result.pages;
     inserted += result.inserted;
@@ -118,8 +119,11 @@ async function scrapeOneHood(env, step, hood, wanted, source, runId, pageCap) {
     searched = true;
     const candidates = extractListingsFromApiResponse(response);
     if (!candidates.length) break;
-    const newListings = candidates.slice(0, wanted - inserted);
     inserted += await step.do(`insert-${source}-${hood.slug}-${pageNumber}`, async () => {
+      const existing = await env.DB.prepare(`SELECT divar_token FROM listings WHERE divar_token IN (${candidates.map(() => '?').join(',')})`)
+        .bind(...candidates.map(listing => listing.token)).all();
+      const known = new Set((existing.results || []).map(row => row.divar_token));
+      const newListings = candidates.filter(listing => !known.has(listing.token)).slice(0, wanted - inserted);
       const statements = newListings.map((listing) => {
         const isSharedHousing = isSharedHousingListing(listing.title, listing.description);
         return env.DB.prepare(`
@@ -141,46 +145,46 @@ async function scrapeOneHood(env, step, hood, wanted, source, runId, pageCap) {
       await step.sleep(`page-spacing-${source}-${hood.slug}-${pageNumber}`, '1 second');
     }
   }
-  if (searched) {
-    const status = failed ? 'failed' : inserted ? 'scraped' : 'empty';
-    const error = failed ? 'ادامهٔ دریافت از دیوار ناموفق بود.' : null;
-    await step.do(`finish-scrape-${source}-${hood.slug}`, async () => {
-      const statements = [
-        env.DB.prepare("UPDATE neighborhoods SET last_scraped_at = datetime('now') WHERE id = ?").bind(hood.id)
-      ];
-      if (runId) {
-        statements.push(env.DB.prepare(`
-          UPDATE manual_runs SET fetched_count = ?, status = ?, error = ? WHERE id = ?
-        `).bind(inserted, status, error, runId));
-      }
-      await env.DB.batch(statements);
-    });
-  }
+  await step.do(`finish-scrape-${source}-${hood.slug}`, async () => {
+    const statements = [];
+    if (searched) statements.push(
+      env.DB.prepare("UPDATE neighborhoods SET last_scraped_at = datetime('now') WHERE id = ?").bind(hood.id));
+    if (runId) {
+      // Keep the run nonterminal until extraction, classification and stats finish.
+      statements.push(env.DB.prepare(`
+        UPDATE manual_runs SET fetched_count = ?, status = 'scraped', error = ? WHERE id = ?
+      `).bind(inserted, failed || !searched ? 'دریافت از دیوار ناموفق بود.' : null, runId));
+    }
+    if (statements.length) await env.DB.batch(statements);
+  });
   return { inserted, pages, failed: failed || !searched };
 }
 
 // ---- extract ----
-async function extractSliceIds(env, source, neighborhoodId, slice, excludeIds, order) {
+async function extractSliceIds(env, source, neighborhoodId, slice, excludeIds, order, afterId = 0) {
   const exclusions = (excludeIds || []).slice(-EXCLUDE_IDS_MAX);
   const rows = await env.DB.prepare(`
     SELECT id, title, description FROM listings
-    WHERE extraction_done = 0 AND scrape_source = ?
+    WHERE extraction_done = 0 AND scrape_source = ? AND id > ?
       AND (? IS NULL OR neighborhood_id = ?)
       ${exclusions.length ? `AND id NOT IN (${exclusions.map(() => '?').join(',')})` : ''}
-    ORDER BY scraped_at ${order === 'DESC' ? 'DESC' : 'ASC'} LIMIT ?
-  `).bind(source, neighborhoodId, neighborhoodId, ...exclusions, slice).all();
+    ORDER BY scraped_at ${order === 'DESC' ? 'DESC' : 'ASC'}, id ASC LIMIT ?
+  `).bind(source, afterId, neighborhoodId, neighborhoodId, ...exclusions, slice).all();
   return rows.results || [];
 }
 
-async function runAiStep(env, listing, date, source, dailyLimit, hour) {
+async function runAiStep(env, listing, source, dailyLimit, usageDate) {
   if (!hasExtractableText(listing)) return { id: listing.id, reserved: false, skip: true };
+  const { date, hour } = tehranClock();
+  if (date !== usageDate) await getUsage(env, date);
   const reserved = await reserveAiCall(env, date, source, dailyLimit, hour);
   if (!reserved) return { id: listing.id, reserved: false, quotaExhausted: true };
   try {
     const raw = await callExtractionModel(env, listing);
     return { id: listing.id, reserved: true, ok: true, raw };
   } catch (error) {
-    return { id: listing.id, reserved: true, ok: false, error: classifyExtractionError(error) };
+    return { id: listing.id, reserved: true, ok: false, error: classifyExtractionError(error),
+      message: String(error?.message || error).slice(0, 1000), quotaResetAt: nextAiQuotaReset() };
   }
 }
 
@@ -189,18 +193,33 @@ async function commitChunk(env, meta, results) {
   const failedIds = [];
   let processed = 0;
   let quotaExhausted = false;
+  let providerResetAt = 0;
   let subrequest = false;
   for (const result of results) {
     if (result.quotaExhausted) { quotaExhausted = true; continue; }
-    if (result.skip) continue;
+    if (result.skip) {
+      statements.push(env.DB.prepare("UPDATE listings SET extraction_done = -1, updated_at = datetime('now') WHERE id = ? AND extraction_done = 0").bind(result.id));
+      continue;
+    }
     if (!result.ok) {
-      if (result.error === 'quota_exhausted') { quotaExhausted = true; continue; }
+      statements.push(env.DB.prepare('INSERT INTO request_logs (service, url, status, error) VALUES (?, ?, ?, ?)')
+        .bind('workers-ai', `listing-${result.id}`, 0, result.message || result.error));
+      if (result.error === 'quota_exhausted') {
+        quotaExhausted = true;
+        providerResetAt = result.quotaResetAt || nextAiQuotaReset();
+        continue;
+      }
       if (result.error === 'subrequest_limit') { subrequest = true; continue; }
       failedIds.push(result.id);
       continue;
     }
     const data = parseExtractionResult(result.raw);
-    if (!data) { failedIds.push(result.id); continue; }
+    if (!data) {
+      failedIds.push(result.id);
+      statements.push(env.DB.prepare('INSERT INTO request_logs (service, url, status, error) VALUES (?, ?, ?, ?)')
+        .bind('workers-ai', `listing-${result.id}`, 0, 'Invalid extraction JSON or field types'));
+      continue;
+    }
     const listing = meta.get(String(result.id)) || {};
     const isSharedHousing = isSharedHousingListing(listing.title, listing.description, data.property_type);
     statements.push(env.DB.prepare(`
@@ -227,8 +246,8 @@ async function commitChunk(env, meta, results) {
     await env.DB.batch(statements);
     return { processed, failedIds, quotaExhausted, subrequest };
   }
-  if (quotaExhausted) {
-    const until = String(Date.now() + 24 * 60 * 60 * 1000);
+  if (providerResetAt) {
+    const until = String(providerResetAt);
     statements.push(env.DB.prepare(`
       INSERT INTO system_state (key, value, updated_at) VALUES ('ai_quota_until', ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
@@ -242,20 +261,19 @@ async function commitChunk(env, meta, results) {
 }
 
 async function extractPhase(env, step, payload) {
-  const { source, date, dailyLimit, neighborhoodId = null, order = 'ASC' } = payload;
+  const { source, dailyLimit, neighborhoodId = null, order = 'ASC' } = payload;
+  const { date, hour } = await step.do('extract-clock', () => tehranClock());
   const usage = await step.do('extract-usage', () => getUsage(env, date));
   const exhausted = await step.do('extract-quota-check', () => isAiQuotaExhausted(env));
-  if (exhausted) return { results: { processed: 0, quotaExhausted: true, filled: false }, patch: {} };
-
-  const hour = tehranClock().hour;
-  const remaining = source === 'auto'
-    ? aiCallBudgets(dailyLimit, usage, hour).auto_remaining
-    : dailyLimit - Number(usage.total_calls || 0);
+  const budgets = aiCallBudgets(dailyLimit, usage, hour);
+  const remaining = source === 'auto' ? budgets.auto_remaining : budgets.manual_remaining;
   const slice = extractSlice(remaining, EXTRACT_SLICE);
-  if (slice <= 0) return { results: { processed: 0, quotaExhausted: true, filled: false }, patch: {} };
+  if (exhausted || slice <= 0) {
+    return { results: { processed: 0, quotaExhausted: true, filled: false }, patch: { manualQuotaExhausted: Boolean(payload.manualRunId) } };
+  }
 
   const excludeIds = payload.failedIds || [];
-  const selected = await step.do('extract-select', () => extractSliceIds(env, source, neighborhoodId, slice, excludeIds, order));
+  const selected = await step.do('extract-select', () => extractSliceIds(env, source, neighborhoodId, slice, excludeIds, order, payload.afterId || 0));
   if (!selected.length) return { results: { processed: 0, quotaExhausted: false, filled: false }, patch: {} };
 
   const meta = new Map(selected.map((listing) => [String(listing.id), { title: listing.title, description: listing.description }]));
@@ -268,8 +286,10 @@ async function extractPhase(env, step, payload) {
     const aiResults = [];
     for (let offset = 0; offset < items.length; offset += 1) {
       const listing = items[offset];
-      aiResults.push(await step.do(`ai-${start + offset}-${listing.id}`, () =>
-        runAiStep(env, listing, date, source, dailyLimit, hour)));
+      const result = await step.do(`ai-${start + offset}-${listing.id}`, () =>
+        runAiStep(env, listing, source, dailyLimit, date));
+      aiResults.push(result);
+      if (result.quotaExhausted || ['quota_exhausted', 'subrequest_limit'].includes(result.error)) break;
       await step.sleep(`ai-pace-${listing.id}`, '500 milliseconds');
     }
     const commit = await step.do(`commit-${start}`, () => commitChunk(env, meta, aiResults));
@@ -287,19 +307,9 @@ async function extractPhase(env, step, payload) {
     filled: hopFilled({ processed, selected: selected.length, slice, quotaExhausted, subrequest })
   };
   const patch = { processedThisRun: Number(payload.processedThisRun || 0) + processed };
-  if (subrequest) { results.terminal = true; results.abort = true; }
-  if (source === 'manual' && payload.manualRunId && quotaExhausted) {
-    await step.do('manual-quota-lock', () => markManualQuotaLocked(env, payload.runId, payload.manualRunId));
-    results.terminal = true;
-  }
+  if (payload.manualRunId && patch.processedThisRun >= Number(payload.scrapedThisRun || 0)) results.filled = false;
+  if (source === 'manual' && payload.manualRunId && quotaExhausted) patch.manualQuotaExhausted = true;
   return { results, patch };
-}
-
-async function markManualQuotaLocked(env, runId, manualRunId) {
-  if (!await ownsWorkflowLease(env, runId)) return;
-  await env.DB.prepare(`
-    UPDATE manual_runs SET status = 'quota_exhausted', error = ?, finished_at = datetime('now') WHERE id = ?
-  `).bind('سهمیهٔ پردازش هوش مصنوعی به پایان رسیده است.', manualRunId).run();
 }
 
 // ---- jev ----
@@ -350,10 +360,11 @@ async function planPhase(env, step, payload, settings) {
     await step.do('manual-running', () => env.DB.prepare("UPDATE manual_runs SET status = 'running' WHERE id = ?").bind(run.run_id).run());
     const queue = [{ id: run.neighborhood_id, slug: run.slug, divar_id: run.divar_id, recent_count: 0, last_scraped_at: null }];
     const pendingBeforeRun = await step.do('pending-before-run', () => countPending(env, 'manual'));
+    const lastListing = await step.do('manual-start-boundary', () => env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM listings').first());
     return {
       results: { processed: 0 },
       patch: {
-        queue, scrapeRemaining: Math.min(Number(run.requested_count), remaining),
+        queue, scrapeRemaining: Math.min(Number(run.requested_count), remaining), afterId: Number(lastListing.id),
         source: 'manual', date: now.date, dailyLimit, neighborhoodId: run.neighborhood_id, order: 'DESC',
         manualRunId: run.run_id, runId: payload.runId,
         pendingBeforeRun, scrapedThisRun: 0, processedThisRun: 0
@@ -382,7 +393,7 @@ async function planPhase(env, step, payload, settings) {
   return {
     results: { processed: 0 },
     patch: {
-      queue, scrapeRemaining: autoRemaining, source: 'auto', date: now.date, dailyLimit, runId: payload.runId,
+      queue, scrapeRemaining: Math.max(0, autoRemaining - pendingBeforeRun), source: 'auto', date: now.date, dailyLimit, runId: payload.runId,
       pendingBeforeRun, scrapedThisRun: 0, processedThisRun: 0
     }
   };
@@ -399,7 +410,7 @@ async function finalizePhase(env, step, payload) {
     }
   });
   if (payload.manualRunId) {
-    await step.do('manual-finalize', () => finalizeManual(env, payload.runId, payload.manualRunId));
+    await step.do('manual-finalize', () => finalizeManual(env, payload));
   }
   const backlog = classifyBacklog({
     pendingBeforeRun: payload.pendingBeforeRun,
@@ -413,18 +424,24 @@ async function finalizePhase(env, step, payload) {
   return { results: { terminal: true }, patch: {} };
 }
 
-async function finalizeManual(env, runId, manualRunId) {
+async function finalizeManual(env, payload) {
+  const { runId, manualRunId } = payload;
   if (!await ownsWorkflowLease(env, runId)) return;
-  const run = await env.DB.prepare('SELECT requested_count, fetched_count, status FROM manual_runs WHERE id = ?')
+  const run = await env.DB.prepare('SELECT requested_count, fetched_count, status, error FROM manual_runs WHERE id = ?')
     .bind(manualRunId).first();
   if (!run || ['quota_exhausted', 'failed'].includes(run.status)) return;
-  const status = manualRunOutcome({
-    requested: Number(run.requested_count || 0),
-    inserted: Number(run.fetched_count || 0),
-    quotaLocked: false
-  });
-  await env.DB.prepare("UPDATE manual_runs SET status = ?, finished_at = datetime('now') WHERE id = ?")
-    .bind(status, manualRunId).run();
+  const unfinished = await env.DB.prepare(`SELECT COUNT(*) AS total FROM listings
+    WHERE scrape_source = 'manual' AND neighborhood_id = ? AND id > ?
+      AND (extraction_done <> 1 OR jev_done = 0)`)
+    .bind(payload.neighborhoodId, payload.afterId || 0).first();
+  const error = run.error || (payload.manualQuotaExhausted ? 'سهمیهٔ پردازش هوش مصنوعی به پایان رسیده است.'
+    : Number(unfinished?.total || 0) ? 'تحلیل بعضی آگهی‌ها ناموفق بود؛ گزارش خطاها را بررسی کنید.' : null);
+  const status = run.error ? 'failed' : payload.manualQuotaExhausted ? 'quota_exhausted'
+    : error ? 'failed' : manualRunOutcome({
+      requested: Number(run.requested_count || 0), inserted: Number(run.fetched_count || 0)
+    });
+  await env.DB.prepare("UPDATE manual_runs SET status = ?, error = ?, finished_at = datetime('now') WHERE id = ?")
+    .bind(status, error, manualRunId).run();
 }
 
 export class DivarScrapeWorkflow extends WorkflowEntrypoint {

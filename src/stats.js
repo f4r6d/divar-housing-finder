@@ -21,11 +21,11 @@ const RECENT_SOURCE = `
   WHERE scraped_at >= datetime('now', '-${CACHE_WINDOW_DAYS} days')`;
 
 const AGGREGATE_FIELDS = `
-  SUM(CASE WHEN fake_label <> 'hamkhane' THEN 1 ELSE 0 END) AS listing_count,
-  SUM(CASE WHEN fake_label = 'fake' THEN 1 ELSE 0 END) AS fake_count,
-  SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END) AS suspicious_count,
-  SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END) AS hamkhane_count,
-  SUM(CASE WHEN fake_label <> 'hamkhane' AND extraction_done = 0 THEN 1 ELSE 0 END) AS pending_count,
+  COALESCE(SUM(CASE WHEN fake_label <> 'hamkhane' THEN 1 ELSE 0 END), 0) AS listing_count,
+  COALESCE(SUM(CASE WHEN fake_label = 'fake' THEN 1 ELSE 0 END), 0) AS fake_count,
+  COALESCE(SUM(CASE WHEN fake_label = 'suspicious' THEN 1 ELSE 0 END), 0) AS suspicious_count,
+  COALESCE(SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END), 0) AS hamkhane_count,
+  COALESCE(SUM(CASE WHEN fake_label <> 'hamkhane' AND extraction_done = 0 THEN 1 ELSE 0 END), 0) AS pending_count,
   AVG(CASE WHEN fake_label <> 'hamkhane' AND deposit_toman > 0 THEN deposit_toman END) AS avg_deposit,
   AVG(CASE WHEN fake_label <> 'hamkhane' AND rent_toman > 0 THEN rent_toman END) AS avg_rent,
   AVG(CASE WHEN fake_label <> 'hamkhane' AND deposit_toman > 0 AND size_m2 > 0
@@ -151,8 +151,8 @@ function allTimeSql() {
   return `
     INSERT INTO neighborhood_stats (neighborhood_id, window_days, listing_count, hamkhane_count, computed_at)
     SELECT ${CITY_WIDE_ID}, 0,
-      SUM(CASE WHEN fake_label <> 'hamkhane' THEN 1 ELSE 0 END),
-      SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END),
+      COALESCE(SUM(CASE WHEN fake_label <> 'hamkhane' THEN 1 ELSE 0 END), 0),
+      COALESCE(SUM(CASE WHEN fake_label = 'hamkhane' THEN 1 ELSE 0 END), 0),
       datetime('now')
     FROM listings`;
 }

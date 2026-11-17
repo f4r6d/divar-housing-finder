@@ -28,7 +28,7 @@ export function dashboardHtml() {
     <div class="surface table-wrap"><table class="data-table"><thead><tr><th>محله</th><th>آگهی‌های ۳۰ روز</th><th>میانگین ودیعه</th><th>میانهٔ ودیعه</th><th>میانهٔ ودیعه به‌ازای هر متر</th><th>میانگین اجاره</th><th>میانهٔ اجاره</th><th>جعلی</th><th>مشکوک</th><th>آخرین دریافت</th></tr></thead><tbody id="neighborhood-rows"></tbody></table></div>
     <div class="pager"><button class="button" id="table-prev">پیشین</button><span id="table-page">۱</span><button class="button" id="table-next">بعدی</button></div>
   </section>
-  <section class="panel" id="panel-listings"><div class="section-head"><h2>آگهی‌ها</h2><span id="listing-total" class="muted"></span></div><div class="surface toolbar"><input id="listing-search" placeholder="جست‌وجو در عنوان و توضیحات"><select id="listing-neighborhood"><option value="">همهٔ محله‌ها</option></select><select id="listing-label"><option value="">همهٔ وضعیت‌ها</option><option value="real">معمولی</option><option value="suspicious">مشکوک</option><option value="fake">جعلی</option><option value="hamkhane">هم‌خانه</option><option value="pending">در انتظار بررسی</option></select></div><div class="listing-grid" id="listing-grid"></div><div class="pager"><button class="button" id="listing-prev">پیشین</button><span id="listing-page">۱</span><button class="button" id="listing-next">بعدی</button></div></section>
+  <section class="panel" id="panel-listings"><div class="section-head"><h2>آگهی‌ها</h2><span id="listing-total" class="muted"></span></div><div class="surface toolbar"><input id="listing-search" placeholder="جست‌وجو در عنوان و توضیحات"><select id="listing-neighborhood"><option value="">همهٔ محله‌ها</option></select><select id="listing-label"><option value="">همهٔ وضعیت‌ها</option><option value="real">معمولی</option><option value="suspicious">مشکوک</option><option value="fake">جعلی</option><option value="hamkhane">هم‌خانه</option><option value="pending">در انتظار بررسی</option><option value="failed">تحلیل ناموفق</option></select></div><div class="listing-grid" id="listing-grid"></div><div class="pager"><button class="button" id="listing-prev">پیشین</button><span id="listing-page">۱</span><button class="button" id="listing-next">بعدی</button></div></section>
   <section class="panel" id="panel-manual"><div class="section-head"><h2>دریافت آگهی برای یک محله</h2></div><div class="surface" style="padding:14px"><p class="help">این درخواست فقط همان محله را جست‌وجو می‌کند. اگر سهمیهٔ روزانه کافی نباشد، تعداد قابل پردازش کاهش می‌یابد.</p><div class="form-grid"><div class="field"><label for="manual-neighborhood">محله</label><input id="manual-neighborhood" list="manual-options" placeholder="نام محله را جست‌وجو کنید"><datalist id="manual-options"></datalist></div><div class="field"><label for="manual-count">تعداد آگهی درخواستی</label><input id="manual-count" type="number" min="1" max="500" value="10"></div></div><div class="form-actions"><button class="button primary" id="manual-start">شروع دریافت</button><span id="manual-message" class="notice"></span></div><div class="quota" id="quota-panel">در حال دریافت وضعیت سهمیه…</div><div id="manual-status"></div></div></section>
   <section class="panel" id="panel-settings"><div class="section-head"><h2>تنظیمات دریافت خودکار</h2></div><form class="surface" id="settings-form"><div class="form-grid"><div class="field"><label for="daily-limit">سقف پردازش روزانهٔ هوش مصنوعی</label><input id="daily-limit" type="number" min="3" max="500" required><span class="help">۸۰٪ (تا ۴۰۰) برای دریافت خودکار و ۲۰٪ (تا ۱۰۰) برای درخواست دستی رزرو می‌شود.</span></div><div class="field"><label for="fake-threshold">آستانهٔ مشکوک</label><input id="fake-threshold" type="number" min="0" max="1" step=".01"></div><div class="field"><label for="high-threshold">آستانهٔ جعلی</label><input id="high-threshold" type="number" min="0" max="1" step=".01"></div><div class="field wide"><label for="bait-keywords">عبارت‌های هشدار، هر عبارت در یک خط</label><textarea id="bait-keywords" rows="4"></textarea></div><div class="field suggestion-wrap"><label for="auto-search">افزودن محله به دریافت خودکار</label><input id="auto-search" autocomplete="off" placeholder="نام محله را جست‌وجو کنید"><div class="suggestions" id="auto-suggestions" hidden></div><div class="chips" id="auto-selected"></div><span class="help">محله‌ها از فهرست دیوار تازه می‌شوند. این انتخاب‌ها فقط دریافت خودکار را کنترل می‌کنند.</span></div><div class="field"><label for="settings-password">رمز عبور تنظیمات</label><input id="settings-password" type="password" autocomplete="off" required><span class="help">رمز پیش‌فرض: 1311</span></div></div><div class="form-actions"><button class="button primary" type="submit">ذخیرهٔ تنظیمات</button><span id="settings-message" class="notice"></span></div></form></section>
   <section class="panel" id="panel-logs"><div class="section-head"><h2>گزارش دریافت و خطاها</h2></div><div class="surface toolbar"><select id="log-service"><option value="">همهٔ سرویس‌ها</option><option value="scraper">scraper</option><option value="neighborhood-discovery">neighborhood-discovery</option><option value="workers-ai">workers-ai</option><option value="jev">jev</option><option value="system">system</option></select><select id="log-status"><option value="">همهٔ وضعیت‌ها</option><option value="error">خطاها</option><option value="success">موفق</option></select></div><div class="surface log-list" id="log-list"></div></section>
@@ -49,23 +49,120 @@ async function loadSummary(){const params=new URLSearchParams({days:'30'});if(st
 function renderTop(rows){const target=$('top-neighborhoods');target.replaceChildren();if(!rows.length){target.innerHTML='<div class="surface empty">هنوز آگهی تازه‌ای برای نمایش نیست.</div>';return}rows.forEach((n,index)=>{const article=document.createElement('article');article.className='surface top-card';article.innerHTML='<h3>'+fa.format(index+1)+' · '+esc(n.name_fa)+'</h3><p>آگهی: <b>'+fa.format(n.count||0)+'</b></p><p>میانهٔ ودیعه: <b>'+esc(fmt(n.median_deposit))+'</b></p><p class="muted">مشکوک/جعلی: '+fa.format((n.fake_count||0)+(n.suspicious_count||0))+'</p>';article.addEventListener('click',()=>selectNeighborhood(n));target.appendChild(article)})}
 function renderCharts(data){if(!window.Chart)return;const top=data.top_neighborhoods||[];if(state.countChart)state.countChart.destroy();state.countChart=new Chart($('count-chart'),{type:'bar',data:{labels:top.map(x=>x.name_fa),datasets:[{label:'آگهی در ۳۰ روز',data:top.map(x=>x.count),backgroundColor:'#5a9df0',borderRadius:5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}});const days=data.daily||[];if(state.depositChart)state.depositChart.destroy();state.depositChart=new Chart($('deposit-chart'),{type:'line',data:{labels:days.map(x=>formatPersianDate(x.day)),datasets:[{label:'میانهٔ ودیعه',data:days.map(x=>x.median_deposit),borderColor:'#0071e3',backgroundColor:'#eaf3ff',spanGaps:true,tension:.25}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:value=>money.format(value)}}}}})}
 function selectNeighborhood(n){state.selectedSlug=n.slug;const option=state.neighborhoods.find(x=>x.slug===n.slug);$('overview-neighborhood').value=option?.name_fa||n.name_fa;loadSummary()}
-async function loadTable(){const params=new URLSearchParams({page:String(state.page),page_size:'20',search:state.tableSearch,sort:state.tableSort,days:'30'});const data=await api('/api/neighborhoods?'+params);const body=$('neighborhood-rows');body.replaceChildren();(data.neighborhoods||[]).forEach(n=>{const row=document.createElement('tr');row.className='table-row';row.innerHTML='<td>'+esc(n.name_fa)+'</td><td>'+fa.format(n.count||0)+'</td><td>'+esc(fmt(n.avg_deposit))+'</td><td>'+esc(fmt(n.median_deposit))+'</td><td>'+esc(fmt(n.median_deposit_per_sqm))+'</td><td>'+esc(fmt(n.avg_rent))+'</td><td>'+esc(fmt(n.median_rent))+'</td><td>'+fa.format(n.fake_count||0)+'</td><td>'+fa.format(n.suspicious_count||0)+'</td><td>'+esc(time(n.last_scraped_at))+'</td>';row.addEventListener('click',()=>{selectNeighborhood(n);showTab('listings');$('listing-neighborhood').value=n.slug;state.listingNeighborhood=n.slug;loadListings()});body.appendChild(row)});if(!data.neighborhoods?.length)body.innerHTML='<tr><td colspan="10" class="empty">موردی پیدا نشد.</td></tr>';const pages=Math.max(1,data.pages||1);$('table-page').textContent=fa.format(state.page)+' از '+fa.format(pages);$('table-prev').disabled=state.page<=1;$('table-next').disabled=state.page>=pages}
-async function loadListings(){const params=new URLSearchParams({page:String(state.listingPage),page_size:'20'});if(state.listingSearch)params.set('search',state.listingSearch);if(state.listingNeighborhood)params.set('neighborhood',state.listingNeighborhood);if(state.listingLabel)params.set('label',state.listingLabel);const data=await api('/api/listings?'+params);$('listing-total').textContent=fa.format(data.total||0)+' آگهی';$('listing-page').textContent=fa.format(data.page||1)+' از '+fa.format(data.pages||1);$('listing-prev').disabled=state.listingPage<=1;$('listing-next').disabled=state.listingPage>=(data.pages||1);const grid=$('listing-grid');grid.replaceChildren();(data.listings||[]).forEach(item=>{const card=document.createElement('article');card.className='surface listing-card';const extra=item.extracted_data||{};const title=item.title||extra.title||'آگهی بدون عنوان';const badgeNames={fake:'جعلی',suspicious:'مشکوک',real:'معمولی',hamkhane:'هم‌خانه',unknown:'بررسی‌نشده'};card.innerHTML=(item.image_url?'<img src="'+esc(item.image_url)+'" alt="" loading="lazy">':'')+'<div class="listing-body"><h3>'+esc(title)+'</h3><span class="badge '+esc(item.fake_label)+'">'+(badgeNames[item.fake_label]||'بررسی‌نشده')+'</span><p>محله: '+esc(item.neighborhood_name||'نامشخص')+'</p><p>ودیعه: '+esc(fmt(item.deposit_toman??extra.deposit_toman))+'</p><p>اجارهٔ ماهانه: '+esc(fmt(item.rent_toman??extra.rent_toman))+'</p><p>متراژ: '+(item.size_m2??extra.size_m2?fa.format(item.size_m2??extra.size_m2)+' متر':'ثبت نشده')+' · اتاق: '+(item.rooms??extra.rooms?fa.format(item.rooms??extra.rooms):'ثبت نشده')+'</p><p>'+esc(item.description||extra.description||'شرحی ثبت نشده است.')+'</p><p class="muted">دریافت: '+esc(time(item.scraped_at))+'</p><a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer">مشاهدهٔ آگهی</a></div>';grid.appendChild(card)});if(!data.listings?.length)grid.innerHTML='<div class="surface empty">آگهی‌ای برای این جست‌وجو نیست.</div>'}async function loadQuota(){const data=await api('/api/quota');state.quota=data;const remaining=Number(data.manual_remaining||0);const input=$('manual-count');const button=$('manual-start');const panel=$('quota-panel');if(data.quota_exhausted||remaining<=0){input.disabled=true;button.disabled=true;panel.innerHTML='<b>'+(data.quota_exhausted?'سهمیهٔ هوش مصنوعی موقتاً قفل شده است.':'سهمیهٔ دریافت دستی امروز تمام شده است.')+'</b><div class="help">مصرف کل امروز: '+fa.format(data.used||0)+' از '+fa.format(data.limit||0)+' · سهمیهٔ خودکار باقی‌مانده: '+fa.format(data.auto_remaining||0)+'</div>'}else{input.disabled=false;button.disabled=false;input.max=String(remaining);const current=Number(input.value);if(!Number.isInteger(current)||current<1||current>remaining)input.value=String(Math.min(remaining,10));panel.innerHTML='<b>سهمیهٔ دستی قابل استفاده امروز: '+fa.format(remaining)+' آگهی</b><div class="help">از '+fa.format(data.manual_limit||0)+' سهمیهٔ دستی · سهمیهٔ خودکار امروز: '+fa.format(data.auto_used||0)+' از '+fa.format(data.auto_limit||0)+'</div>'}return data}
+let tableRequest=0;
+async function loadTable(){
+  const requestId=++tableRequest;
+  const params=new URLSearchParams({page:String(state.page),page_size:'20',search:state.tableSearch,sort:state.tableSort,days:'30'});
+  try {
+    const data=await api('/api/neighborhoods?'+params);
+    if(requestId!==tableRequest)return;
+    const body=$('neighborhood-rows');body.replaceChildren();
+    (data.neighborhoods||[]).forEach(n=>{
+      const row=document.createElement('tr');row.className='table-row';
+      row.innerHTML='<td>'+esc(n.name_fa)+'</td><td>'+fa.format(n.count||0)+'</td><td>'+esc(fmt(n.avg_deposit))+'</td><td>'+esc(fmt(n.median_deposit))+'</td><td>'+esc(fmt(n.median_deposit_per_sqm))+'</td><td>'+esc(fmt(n.avg_rent))+'</td><td>'+esc(fmt(n.median_rent))+'</td><td>'+fa.format(n.fake_count||0)+'</td><td>'+fa.format(n.suspicious_count||0)+'</td><td>'+esc(time(n.last_scraped_at))+'</td>';
+      row.addEventListener('click',()=>{
+        selectNeighborhood(n);$('listing-neighborhood').value=n.slug;
+        state.listingNeighborhood=n.slug;state.listingPage=1;showTab('listings');
+      });
+      body.appendChild(row);
+    });
+    if(!data.neighborhoods?.length)body.innerHTML='<tr><td colspan="10" class="empty">موردی پیدا نشد.</td></tr>';
+    const pages=Math.max(1,data.pages||1);
+    $('table-page').textContent=fa.format(state.page)+' از '+fa.format(pages);
+    $('table-prev').disabled=state.page<=1;$('table-next').disabled=state.page>=pages;
+  }catch(error){if(requestId===tableRequest)$('table-page').textContent=error.message}
+}
+let listingRequest = 0;
+async function loadListings() {
+  const requestId = ++listingRequest;
+  const params = new URLSearchParams({page:String(state.listingPage),page_size:'20'});
+  if(state.listingSearch)params.set('search',state.listingSearch);
+  if(state.listingNeighborhood)params.set('neighborhood',state.listingNeighborhood);
+  if(state.listingLabel)params.set('label',state.listingLabel);
+  try {
+    const data = await api('/api/listings?'+params);
+    if(requestId !== listingRequest)return;
+    $('listing-total').textContent=fa.format(data.total||0)+' آگهی';
+    $('listing-page').textContent=fa.format(data.page||1)+' از '+fa.format(data.pages||1);
+    $('listing-prev').disabled=state.listingPage<=1;
+    $('listing-next').disabled=state.listingPage>=(data.pages||1);
+    const grid=$('listing-grid');grid.replaceChildren();
+    (data.listings||[]).forEach(item=>{
+      const card=document.createElement('article');card.className='surface listing-card';
+      const extra=item.extracted_data||{};
+      const title=item.title||extra.title||'آگهی بدون عنوان';
+      const badgeNames={fake:'جعلی',suspicious:'مشکوک',real:'معمولی',hamkhane:'هم‌خانه',unknown:'بررسی‌نشده'};
+      const badge=item.extraction_done===-1?'تحلیل ناموفق':(badgeNames[item.fake_label]||'بررسی‌نشده');
+      card.innerHTML=(item.image_url?'<img src="'+esc(item.image_url)+'" alt="" loading="lazy">':'')+'<div class="listing-body"><h3>'+esc(title)+'</h3><span class="badge '+esc(item.fake_label)+'">'+badge+'</span><p>محله: '+esc(item.neighborhood_name||'نامشخص')+'</p><p>ودیعه: '+esc(fmt(item.deposit_toman??extra.deposit_toman))+'</p><p>اجارهٔ ماهانه: '+esc(fmt(item.rent_toman??extra.rent_toman))+'</p><p>متراژ: '+(item.size_m2??extra.size_m2?fa.format(item.size_m2??extra.size_m2)+' متر':'ثبت نشده')+' · اتاق: '+(item.rooms??extra.rooms?fa.format(item.rooms??extra.rooms):'ثبت نشده')+'</p><p>'+esc(item.description||extra.description||'شرحی ثبت نشده است.')+'</p><p class="muted">دریافت: '+esc(time(item.scraped_at))+'</p><a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer">مشاهدهٔ آگهی</a></div>';
+      grid.appendChild(card);
+    });
+    if(!data.listings?.length)grid.innerHTML='<div class="surface empty">آگهی‌ای برای این جست‌وجو نیست.</div>';
+  } catch(error) {
+    if(requestId === listingRequest)$('listing-total').textContent=error.message;
+  }
+}
+async function loadQuota() {
+  const data=await api('/api/quota');state.quota=data;
+  const remaining=Number(data.manual_remaining||0);
+  const input=$('manual-count');const button=$('manual-start');const panel=$('quota-panel');
+  if(data.quota_exhausted||remaining<=0){
+    input.disabled=true;button.disabled=true;
+    panel.innerHTML='<b>'+(data.quota_exhausted?'سهمیهٔ هوش مصنوعی موقتاً قفل شده است.':'سهمیهٔ دریافت دستی امروز تمام شده است.')+'</b><div class="help">مصرف کل امروز: '+fa.format(data.used||0)+' از '+fa.format(data.limit||0)+' · سهمیهٔ خودکار باقی‌مانده: '+fa.format(data.auto_remaining||0)+'</div>';
+  }else{
+    input.disabled=Boolean(state.manualRunId||data.workflow_running);button.disabled=input.disabled;
+    input.max=String(remaining);const current=Number(input.value);
+    if(!Number.isInteger(current)||current<1||current>remaining)input.value=String(Math.min(remaining,10));
+    panel.innerHTML='<b>سهمیهٔ دستی قابل استفاده امروز: '+fa.format(remaining)+' آگهی</b><div class="help">از '+fa.format(data.manual_limit||0)+' سهمیهٔ دستی · سهمیهٔ خودکار امروز: '+fa.format(data.auto_used||0)+' از '+fa.format(data.auto_limit||0)+(data.workflow_running?' · یک پردازش در حال اجرا است.':'')+'</div>';
+  }
+  return data;
+}
 async function startManual(){const place=state.neighborhoods.find(n=>n.name_fa===$('manual-neighborhood').value);if(!place){setNotice($('manual-message'),'یک محلهٔ معتبر انتخاب کنید.',true);return}const count=Number($('manual-count').value);if(!Number.isInteger(count)||count<1||count>500){setNotice($('manual-message'),'تعداد باید بین ۱ تا ۵۰۰ باشد.',true);return}const remaining=Number(state.quota?.manual_remaining||0);if(remaining<=0){setNotice($('manual-message'),'سهمیهٔ دریافت دستی امروز تمام شده است. فردا دوباره تلاش کنید.',true);loadQuota();return}if(count>remaining){setNotice($('manual-message'),'سهمیهٔ دستی باقی‌مانده امروز '+fa.format(remaining)+' آگهی است.',true);return}const button=$('manual-start');button.disabled=true;setNotice($('manual-message'),'درخواست ثبت شد.');try{const run=await api('/api/manual-runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({neighborhood:place.slug,count})});const effective=Number(run.effective_count||count);$('manual-status').innerHTML='<div class="surface status">درخواست '+fa.format(count)+' آگهی از '+esc(place.name_fa)+' ثبت شد؛ در این نوبت حداکثر '+fa.format(effective)+' آگهی دریافت و تحلیل می‌شود. وضعیت: <b>در صف</b></div>';pollManual(run.id)}catch(error){setNotice($('manual-message'),error.message,true);loadQuota().catch(()=>{})}}
-async function pollManual(id){try{const run=await api('/api/manual-runs/'+encodeURIComponent(id));$('manual-status').innerHTML='<div class="surface status">وضعیت: <b>'+esc(run.status_fa)+'</b> · درخواست‌شده: '+fa.format(run.requested_count)+' · دریافت‌شده: '+fa.format(run.fetched_count)+(run.error?'<p class="error">'+esc(run.error)+'</p>':'')+'</div>';await loadQuota();if(['queued','running','scraped'].includes(run.status)){setTimeout(()=>pollManual(id),3000)}else{loadSummary();loadTable();loadListings()}}catch(error){$('manual-status').textContent=error.message;loadQuota().catch(()=>{})}}
+async function pollManual(id) {
+  state.manualRunId=id;
+  try {
+    const run=await api('/api/manual-runs/'+encodeURIComponent(id));
+    $('manual-status').innerHTML='<div class="surface status">وضعیت: <b>'+esc(run.status_fa)+'</b> · درخواست‌شده: '+fa.format(run.requested_count)+' · دریافت‌شده: '+fa.format(run.fetched_count)+(run.error?'<p class="error">'+esc(run.error)+'</p>':'')+'</div>';
+    const active=['queued','running','scraped'].includes(run.status)||!run.finished_at;
+    if(!active)state.manualRunId=null;
+    const quota=await loadQuota();
+    if(active||quota.workflow_running){setTimeout(()=>pollManual(id),3000)}
+    else{await Promise.all([loadSummary(),loadTable(),loadListings()])}
+  }catch(error){
+    $('manual-status').textContent=error.message+' · تلاش مجدد برای دریافت وضعیت…';
+    setTimeout(()=>pollManual(id),10000);
+  }
+}
 async function loadSettings(){const data=await api('/api/settings');state.autoSelected=data.auto_neighborhoods||[];$('daily-limit').value=data.daily_listing_limit??500;$('fake-threshold').value=data.fake_threshold??.6;$('high-threshold').value=data.high_fake_threshold??.8;$('bait-keywords').value=(data.bait_keywords||[]).join('\n');$('settings-password').value='';renderSelected()}
 function renderSelected(){const root=$('auto-selected');root.replaceChildren();state.autoSelected.forEach(slug=>{const n=state.neighborhoods.find(x=>x.slug===slug);if(!n)return;const chip=document.createElement('span');chip.className='chip';chip.textContent=n.name_fa;const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.setAttribute('aria-label','حذف '+n.name_fa);remove.onclick=()=>{state.autoSelected=state.autoSelected.filter(x=>x!==slug);renderSelected()};chip.appendChild(remove);root.appendChild(chip)})}
 function showSuggestions(){const input=$('auto-search');const query=input.value.trim();const root=$('auto-suggestions');root.replaceChildren();if(!query){root.hidden=true;return}const selected=new Set(state.autoSelected);const hits=state.neighborhoods.filter(n=>n.name_fa.includes(query)&&!selected.has(n.slug)).slice(0,15);hits.forEach(n=>{const button=document.createElement('button');button.className='suggestion';button.type='button';button.textContent=n.name_fa;button.onclick=()=>{state.autoSelected.push(n.slug);input.value='';root.hidden=true;renderSelected()};root.appendChild(button)});root.hidden=!hits.length}
 async function saveSettings(event){event.preventDefault();const data={daily_listing_limit:Number($('daily-limit').value),fake_threshold:Number($('fake-threshold').value),high_fake_threshold:Number($('high-threshold').value),bait_keywords:$('bait-keywords').value.split(/\r?\n/),auto_neighborhoods:state.autoSelected,settings_password:$('settings-password').value};try{await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});$('settings-password').value='';setNotice($('settings-message'),'تنظیمات ذخیره شد.')}catch(error){setNotice($('settings-message'),error.message,true)}}
 async function loadLogs(){const service=$('log-service')?.value||'';const status=$('log-status')?.value||'';const query=new URLSearchParams({limit:'100'});if(service)query.set('service',service);if(status)query.set('status',status);const logs=await api('/api/logs?'+query.toString());const target=$('log-list');target.replaceChildren();logs.forEach(log=>{const row=document.createElement('div');row.className='log-row';row.innerHTML='<b>'+esc(log.service)+'</b> · '+esc(time(log.created_at))+' · '+esc(log.error||log.response_snippet||'ثبت رویداد');target.appendChild(row)});if(!logs.length)target.innerHTML='<div class="empty">گزارشی ثبت نشده است.</div>'}
-async function refresh(force=false){if(refreshInFlight)return;refreshInFlight=true;const refreshButton=$('refresh');refreshButton.disabled=true;refreshButton.textContent='در حال به‌روزرسانی…';try{if(force){await api('/api/refresh',{method:'POST'});}await loadNeighborhoods();await Promise.all([loadSummary(),loadTable(),loadQuota()])}catch(error){alert(error.message)}finally{refreshInFlight=false;refreshButton.disabled=false;refreshButton.textContent='به‌روزرسانی آمار'}}
+async function refresh(force=false){
+  if(refreshInFlight)return;refreshInFlight=true;
+  const refreshButton=$('refresh');refreshButton.disabled=true;refreshButton.textContent='در حال به‌روزرسانی…';
+  try{
+    if(force){
+      await api('/api/refresh',{method:'POST'});
+      while((await loadQuota()).workflow_running){
+        refreshButton.textContent='در حال پردازش آگهی‌ها…';
+        await new Promise(resolve=>setTimeout(resolve,5000));
+      }
+    }
+    await loadNeighborhoods();
+    await Promise.all([loadSummary(),loadTable(),loadQuota(),loadListings()]);
+  }catch(error){alert(error.message)}
+  finally{refreshInFlight=false;refreshButton.disabled=false;refreshButton.textContent='به‌روزرسانی آمار'}
+}
 document.querySelectorAll('.tab').forEach(button=>button.addEventListener('click',()=>showTab(button.dataset.tab)));
 $('refresh').addEventListener('click',()=>refresh(true).catch(error=>alert(error.message)));
 $('overview-neighborhood').addEventListener('change',event=>{const found=state.neighborhoods.find(n=>n.name_fa===event.target.value);state.selectedSlug=found?.slug||'';loadSummary()});
-$('neighborhood-search').addEventListener('input',event=>{state.tableSearch=event.target.value;state.page=1;loadTable()});
+function debounce(callback){let timer;return()=>{clearTimeout(timer);timer=setTimeout(callback,250)}}
+const searchTable=debounce(loadTable);
+$('neighborhood-search').addEventListener('input',event=>{state.tableSearch=event.target.value;state.page=1;tableRequest++;searchTable()});
 $('neighborhood-sort').addEventListener('change',event=>{state.tableSort=event.target.value;state.page=1;loadTable()});
 $('table-prev').addEventListener('click',()=>{state.page=Math.max(1,state.page-1);loadTable()});$('table-next').addEventListener('click',()=>{state.page+=1;loadTable()});
-$('listing-search').addEventListener('input',event=>{state.listingSearch=event.target.value;state.listingPage=1;loadListings()});
+const searchListings=debounce(loadListings);
+$('listing-search').addEventListener('input',event=>{state.listingSearch=event.target.value;state.listingPage=1;listingRequest++;searchListings()});
 $('listing-neighborhood').addEventListener('change',event=>{state.listingNeighborhood=event.target.value;state.listingPage=1;loadListings()});
 $('listing-label').addEventListener('change',event=>{state.listingLabel=event.target.value;state.listingPage=1;loadListings()});
 $('listing-prev').addEventListener('click',()=>{state.listingPage=Math.max(1,state.listingPage-1);loadListings()});$('listing-next').addEventListener('click',()=>{state.listingPage+=1;loadListings()});

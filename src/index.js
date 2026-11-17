@@ -210,7 +210,8 @@ async function getQuota(env) {
     manual_remaining: budgets.manual_remaining,
     remaining: budgets.remaining,
     manual_searches: Number(usage.manual_searches || 0),
-    quota_exhausted: await isAiLocked(env)
+    quota_exhausted: await isAiLocked(env),
+    workflow_running: await isWorkflowBusy(env, LEASE_STALE_MS)
   };
 }
 
@@ -289,6 +290,7 @@ async function apiRoute(request, env, url) {
       values.push(neighborhood);
     }
     if (label === 'pending') clauses.push('l.extraction_done = 0');
+    else if (label === 'failed') clauses.push('l.extraction_done = -1');
     else if (LABELS.has(label)) {
       clauses.push('l.fake_label = ?');
       values.push(label);
@@ -328,6 +330,7 @@ async function apiRoute(request, env, url) {
   if (pathname === '/api/manual-runs' && request.method === 'POST') {
     let input;
     try { input = await request.json(); } catch { return json({ error: 'درخواست معتبر نیست.' }, 400); }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return json({ error: 'درخواست معتبر نیست.' }, 400);
     const slug = String(input.neighborhood || '');
     const count = Number(input.count);
     if (!Number.isInteger(count) || count < 1 || count > DAILY_LISTING_LIMIT_MAX) {
@@ -396,6 +399,7 @@ async function apiRoute(request, env, url) {
   if (pathname === '/api/settings' && request.method === 'POST') {
     let input;
     try { input = await request.json(); } catch { return json({ error: 'درخواست معتبر نیست.' }, 400); }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return json({ error: 'درخواست معتبر نیست.' }, 400);
     const dailyLimit = Number(input.daily_listing_limit);
     const fakeThreshold = Number(input.fake_threshold);
     const highThreshold = Number(input.high_fake_threshold);

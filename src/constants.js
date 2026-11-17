@@ -11,5 +11,5 @@ export const SCRAPE_PAGES_PER_INSTANCE = 32;   // hard cap on external search fe
 export const EXTRACT_SLICE = 40;
 export const EXTRACT_CHUNK = 5;
 export const JEV_SLICE = 40;
-export const EXCLUDE_IDS_MAX = 400;            // bound on the ids the extract slice query skips
+export const EXCLUDE_IDS_MAX = 90;             // leave room under D1's 100 bound-parameter limit
 export const LEASE_STALE_MS = 30 * 60 * 1000;  // chain lease considered stale after 30 minutes

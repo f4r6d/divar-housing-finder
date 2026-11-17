@@ -26,9 +26,16 @@ export function aiCallBudgets(dailyLimit, usage = {}, hour = 10) {
     auto_limit: lateAutomaticLimit,
     manual_limit: manualShare,
     remaining: Math.max(0, dailyLimit - totalCalls),
-    auto_remaining: Math.max(0, lateAutomaticLimit - autoCalls),
+    auto_remaining: Math.max(0, Math.min(lateAutomaticLimit - autoCalls, dailyLimit - totalCalls)),
     manual_remaining: Math.max(0, Math.min(manualShare - manualCalls, dailyLimit - totalCalls))
   };
+}
+
+// Workers AI's provider allocation resets at midnight UTC, independently of the
+// application's Tehran-local call budget.
+export function nextAiQuotaReset(now = Date.now()) {
+  const date = new Date(now);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
 }
 
 export function canReserveCall(usage, dailyLimit, source = 'auto', hour = 10) {

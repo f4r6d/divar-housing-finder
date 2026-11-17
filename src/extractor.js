@@ -34,9 +34,15 @@ export async function callExtractionModel(env, listing) {
 export function parseExtractionResult(result) {
   try {
     const output = typeof result === 'string' ? result : (result?.response ?? result?.output_text ?? result);
-    if (typeof output === 'object' && output !== null) return output;
-    const text = String(output || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    return JSON.parse(text);
+    const data = typeof output === 'object' && output !== null ? output
+      : JSON.parse(String(output || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const numericFields = ['price_toman', 'rent_toman', 'deposit_toman', 'size_m2', 'rooms'];
+    if (!numericFields.some(key => Object.hasOwn(data, key))) return null;
+    for (const key of numericFields) {
+      if (data[key] != null && (typeof data[key] !== 'number' || !Number.isFinite(data[key]) || data[key] < 0)) return null;
+    }
+    return data;
   } catch {
     return null;
   }
