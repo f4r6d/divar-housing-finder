@@ -8,7 +8,8 @@ import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { refreshAggregates, computeSummary } from '../src/stats.js';
-import { parseExtractionResult } from '../src/extractor.js';
+import { MODEL, MAX_COMPLETION_TOKENS, callExtractionModel, parseExtractionResult } from '../src/extractor.js';
+import { EXTRACT_SLICE, JEV_SLICE, SCRAPE_PAGES_PER_INSTANCE, EXCLUDE_IDS_MAX } from '../src/constants.js';
 
 // Run the real router and workflow SQL against SQLite; only Cloudflare's host classes,
 // durable step scheduling, and external services are replaced.
@@ -352,6 +353,132 @@ test('AI extraction parser rejects non-object results and accepts valid object e
     assert.equal(parseExtractionResult(value), null);
   }
   assert.equal(parseExtractionResult({ response: { deposit_toman: 500_000_000 } }).deposit_toman, 500_000_000);
+});
+
+test('extraction uses one bounded, non-thinking request to a Free-compatible replacement', async () => {
+  const calls = [];
+  const response = { choices: [{ message: { content: '{"size_m2":75}' }, finish_reason: 'stop' }] };
+  const env = { AI: { async run(...args) { calls.push(args); return response; } } };
+  assert.equal(await callExtractionModel(env, { title: 'x'.repeat(1000), description: 'y'.repeat(10000) }), response);
+  assert.equal(MODEL, '@cf/google/gemma-4-26b-a4b-it');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].length, 2, 'no paid gateway options');
+  const [model, input] = calls[0];
+  assert.equal(model, MODEL);
+  assert.equal(input.max_completion_tokens, MAX_COMPLETION_TOKENS);
+  assert.equal(MAX_COMPLETION_TOKENS, 768);
+  assert.deepEqual(input.chat_template_kwargs, { enable_thinking: false });
+  assert.deepEqual(input.response_format, { type: 'json_object' });
+  assert.equal(input.temperature, 0);
+  assert.ok(input.messages[1].content.length < 5500, 'bound listing text and title');
+  await assert.rejects(callExtractionModel({}, {}), /binding is unavailable/);
+});
+
+function completion(content, finish_reason = 'stop', extra = {}) {
+  return { object: 'chat.completion', choices: [{ message: { content, ...extra }, finish_reason }] };
+}
+
+test('parser supports Cloudflare chat completions and legacy response formats', () => {
+  const facts = { deposit_toman: 500_000_000, rent_toman: 0, size_m2: 75, rooms: null, rent_deposit_flexible: false };
+  const text = JSON.stringify(facts);
+  for (const raw of [facts, text, { response: facts }, { response: text }, { output_text: text },
+    completion(text), { response: completion(text) }, completion('  ```json\n' + text + '\n```  ')]) {
+    assert.deepEqual(parseExtractionResult(raw), facts);
+  }
+});
+
+test('parser rejects reasoning-only, refused and truncated chat completions', () => {
+  for (const raw of [completion(null, 'length', { reasoning: '{"size_m2":75}' }),
+    completion('{"size_m2":75}', 'length'), completion('{"size_m2":75}', 'content_filter'),
+    completion('{"size_m2":75}', 'stop', { refusal: 'Refused' }), completion('{"size_m2":'),
+    completion(''), { choices: [] }, { choices: null }]) {
+    assert.equal(parseExtractionResult(raw), null);
+  }
+});
+
+test('parser rejects invalid fact types without coercing AI output into database fields', () => {
+  for (const fields of [{ rent_deposit_flexible: 'false' }, { has_bait_signals: 1 },
+    { description: {} }, { property_type: 'unknown' }, { suspicious_phrases: 'phrase' },
+    { suspicious_phrases: [42] }, { size_m2: Infinity }, { size_m2: -1 }]) {
+    assert.equal(parseExtractionResult({ size_m2: 75, ...fields }), null);
+  }
+});
+
+test('explicit full-deposit conversion uses deterministic arithmetic on quoted amounts', () => {
+  const quoted = { deposit_toman: 100_000_000, rent_toman: 6_000_000,
+    rent_deposit_flexible: true, convert_to_full_deposit: true };
+  const converted = parseExtractionResult(completion(JSON.stringify(quoted)));
+  assert.equal(converted.deposit_toman, 300_000_000);
+  assert.equal(converted.rent_toman, 0);
+  assert.equal(quoted.rent_toman, 6_000_000, 'raw model output must not be mutated');
+  assert.deepEqual(parseExtractionResult(converted), converted, 'conversion is idempotent');
+  assert.equal(parseExtractionResult({ ...quoted, deposit_toman: 0 }).deposit_toman, 200_000_000);
+  assert.equal(parseExtractionResult({ ...quoted, deposit_toman: 0, rent_toman: 0 }).deposit_toman, 0);
+  for (const changed of [{ rent_deposit_flexible: false }, { deposit_toman: null },
+    { rent_toman: null }, { convert_to_full_deposit: 'true' }, { rent_toman: Number.MAX_VALUE }]) {
+    assert.equal(parseExtractionResult({ ...quoted, ...changed }), null);
+  }
+  const negotiable = { ...quoted, convert_to_full_deposit: false };
+  assert.deepEqual(parseExtractionResult(negotiable), negotiable);
+});
+
+test('chat-completion extraction reaches classification and cached statistics', async t => {
+  const h = integrationHarness(t, { ai: () => completion(JSON.stringify({
+    size_m2: 75, deposit_toman: 500_000_000, rent_toman: 3_000_000, property_type: 'apartment'
+  })) });
+  h.listing();
+  await h.request('/api/refresh', {});
+  await h.drain();
+  assert.equal(h.aiCalls.length, 1);
+  const row = h.sqlite.prepare('SELECT extraction_done, jev_done, deposit_toman FROM listings').get();
+  assert.equal(row.extraction_done, 1);
+  assert.equal(row.jev_done, 1);
+  assert.equal(row.deposit_toman, 500_000_000);
+  assert.equal((await h.request('/api/stats')).data.pending, 0);
+});
+
+test('workflow slices and deployment settings retain Free-plan-compatible limits', () => {
+  const config = JSON.parse(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  assert.ok(EXTRACT_SLICE <= 40 && JEV_SLICE <= 40 && SCRAPE_PAGES_PER_INSTANCE <= 32);
+  assert.ok(EXCLUDE_IDS_MAX + 4 <= 100);
+  assert.equal(config.workflows[0].concurrency.limit, 1);
+  assert.equal(config.limits, undefined, 'no paid-only CPU or subrequest overrides');
+  assert.deepEqual(config.ai, { binding: 'AI' });
+});
+
+// Opt-in only: a local verification endpoint backed by the real Workers AI binding.
+// Never runs during npm test; live inference consumes the account's free Neuron allocation.
+test('live Persian extraction fixtures', { skip: !process.env.EXTRACTION_LIVE_URL }, async t => {
+  const url = new URL(process.env.EXTRACTION_LIVE_URL);
+  assert.equal(url.hostname, '127.0.0.1', 'live tests must use an explicitly started local verification endpoint');
+  const fixtures = [
+    { title: 'آپارتمان ۷۵ متری', description: 'ودیعه ۵۰۰ میلیون تومان، اجاره ۳ میلیون تومان، دو خواب',
+      expected: { deposit_toman: 500_000_000, rent_toman: 3_000_000, size_m2: 75, rooms: 2, rent_deposit_flexible: false } },
+    { title: 'آپارتمان ٦٧ متری', description: 'ودیعه: ١,٥٠٠,٠٠٠,٠٠٠ تومان | رهن کامل',
+      expected: { deposit_toman: 1_500_000_000, rent_toman: 0, size_m2: 67, rooms: null, rent_deposit_flexible: false } },
+    { title: 'آپارتمان ۸۰ متری دو خواب', description: 'ودیعه ۱۰۰ میلیون تومان، اجاره ۶ میلیون تومان. قابل تبدیل کامل به رهن با نرخ هر سه میلیون اجاره معادل صد میلیون ودیعه.',
+      expected: { deposit_toman: 300_000_000, rent_toman: 0, size_m2: 80, rooms: 2, rent_deposit_flexible: true } },
+    { title: 'آپارتمان ۹۰ متری', description: 'فقط دو حالت: ۴۰۰ میلیون ودیعه و ۱۲ میلیون اجاره، یا ۷۰۰ میلیون ودیعه و ۳ میلیون اجاره. تبدیل دیگری نداریم.',
+      expected: { deposit_toman: 700_000_000, rent_toman: 3_000_000, size_m2: 90 } },
+    { title: 'آپارتمان اجاره‌ای', description: 'قیمت، تعداد اتاق و متراژ اعلام نشده است.',
+      expected: { deposit_toman: null, rent_toman: null, size_m2: null, rooms: null, rent_deposit_flexible: false } },
+    { title: 'هم‌خانه خانم', description: 'اجاره اتاق مشترک. ودیعه ۵۰ میلیون تومان و اجاره ۱۰ میلیون تومان.',
+      expected: { deposit_toman: 50_000_000, rent_toman: 10_000_000, property_type: 'room', rent_deposit_flexible: false } }
+  ];
+  for (const [i, fixture] of fixtures.entries()) {
+    const model = process.env.EXTRACTION_COMPARE_QWEN ? '@cf/qwen/qwen3.8-27b' : MODEL;
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, listing: { title: fixture.title, description: fixture.description } }),
+      signal: AbortSignal.timeout(90_000) });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    await t.test(`fixture ${i + 1}`, () => {
+      t.diagnostic(JSON.stringify({ model, fixture: i + 1, ms: result.elapsed_ms,
+        usage: result.raw?.usage, finish: result.raw?.choices?.[0]?.finish_reason, facts: result.facts }));
+      assert.ok(result.facts, 'complete, valid extraction JSON required');
+      for (const [field, value] of Object.entries(fixture.expected)) assert.equal(result.facts[field], value, field);
+    });
+  }
 });
 
 test('manual runs can search past four duplicate-heavy pages', async t => {
